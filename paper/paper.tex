@@ -119,6 +119,10 @@ evaluates them on a common benchmark. Our contributions are:
     characterisation (\S\ref{sec:discussion}).
 \end{itemize}
 
+\noindent We discuss limitations in \S\ref{sec:limits}, including
+detector quality bounds, synthetic workloads, and the absence of
+online utility evaluation.
+
 \section{Background and Threat Model}
 \label{sec:threat}
 
@@ -230,7 +234,8 @@ tokens.
 \paragraph{TEE-based inference.}
 Graviton~\cite{TODO-graviton} and Slalom~\cite{TODO-slalom}
 pioneered TEE-hosted neural networks.  Apple's Private Cloud
-Compute~\cite{TODO-apple-pcc} and NVIDIA's H100 Confidential
+Compute~\cite{TODO-apple-pcc}, Azure Confidential
+Computing~\cite{azure-cc}, and NVIDIA's H100 Confidential
 Compute~\cite{TODO-h100cc} are the most mature current offerings.
 TEEs protect against co-tenants and unprivileged operators but not
 against hardware-level side channels or supply-chain compromise.
@@ -278,7 +283,7 @@ H~DP noise   & formal    & lossy   & low    & low    & niche \\
 
 Local inference provides \emph{perfect} privacy by construction:
 nothing leaves the device.  Our implementation uses a few-shot
-classifier (running on a local 3B model via Ollama) to triage
+classifier (running on a local 3B model via Ollama~\cite{ollama}) to triage
 requests as \textsc{trivial} or \textsc{complex}.  Trivial
 requests are answered locally; complex requests proceed to the
 cloud pipeline.  The classifier uses the same architecture as
@@ -290,8 +295,9 @@ model cannot match frontier cloud models on complex tasks.
 
 \subsection{Option B --- Redaction with placeholder restoration}
 
-A local NER detector (Presidio with spaCy \texttt{en\_core\_web\_sm})
-plus regex pattern families identifies sensitive spans.  Each span
+A local NER detector (Presidio~\cite{TODO-presidio} with
+spaCy~\cite{spacy} \texttt{en\_core\_web\_sm}) plus regex pattern
+families identifies sensitive spans.  Each span
 is replaced with a typed, stable placeholder
 (\texttt{{\fontfamily{cmtt}\selectfont\char"27E8}EMAIL\_1{\fontfamily{cmtt}\selectfont\char"27E9}}).
 Two occurrences of the same value map to the same placeholder
@@ -333,23 +339,26 @@ runs inside the enclave.
 
 The first $N$ layers of an open-weight model run locally; only
 intermediate activations (not tokens) are sent to a remote host.
-We use Petals as the reference framework.  The privacy risk is
-activation inversion: research shows activations can sometimes be
-decoded back to the input.
+We use Petals~\cite{TODO-petals} as the reference framework.
+The privacy risk is activation
+inversion~\cite{activation-inversion}: research shows activations
+can sometimes be decoded back to the input.
 
 \subsection{Option F --- Fully homomorphic encryption}
 
 The input is encrypted with a homomorphic scheme; inference runs
 on ciphertext.  We demonstrate a small binary classifier
-(sensitive vs.\ non-sensitive) under Zama's Concrete ML.  FHE
+(sensitive vs.\ non-sensitive) under Zama's Concrete
+ML~\cite{TODO-zama}.  FHE
 inference of full LLMs remains 10{,}000--100{,}000$\times$ slower
 than plaintext and is not practical today for chat-scale models.
 
 \subsection{Option G --- Multi-party computation}
 
 The input is secret-shared across $N$ non-colluding servers.
-We demonstrate a first-layer MPC embedding lookup using CrypTen.
-This hides token IDs from any single server but does not protect
+We demonstrate a first-layer MPC embedding lookup using
+CrypTen~\cite{TODO-crypten}.  This hides token IDs from any
+single server but does not protect
 the remaining layers, which run on plaintext activations.
 
 \subsection{Option H --- Differential privacy noise}
@@ -370,10 +379,10 @@ interfaces and a pipeline of independently togglable stages.
 
 \paragraph{Transport layer.}
 Two parallel interfaces serve different integration patterns:
-(1)~an MCP stdio server exposing \texttt{redact.transform},
+(1)~an MCP~\cite{TODO-mcp} stdio server exposing \texttt{redact.transform},
 \texttt{redact.detect}, and \texttt{redact.stats} tools; and
 (2)~an HTTP proxy at \texttt{POST /v1/chat/completions}
-(OpenAI-compatible).  Agents point
+(OpenAI-compatible~\cite{openai-api}).  Agents point
 \texttt{OPENAI\_API\_BASE} at the proxy and all cloud calls
 transparently flow through the redactor.
 
@@ -404,8 +413,9 @@ leakage channel than the one we prevent.
 Detection uses three complementary strategies:
 (1)~regex patterns for structured secrets (AWS keys, bearer tokens,
 PEM markers, API keys, emails, IPs, phone numbers);
-(2)~Presidio with spaCy \texttt{en\_core\_web\_sm} for NER-based
-PII (person names, locations, organisations); and
+(2)~Presidio~\cite{TODO-presidio} with spaCy~\cite{spacy}
+\texttt{en\_core\_web\_sm} for NER-based PII (person names,
+locations, organisations); and
 (3)~a local LM classifier for semantic sensitivity questions
 that surface-level patterns miss.
 Detectors emit \texttt{Span(start, end, kind, confidence, text,
@@ -619,6 +629,7 @@ employee\_id & 0.798 \\
   \label{fig:leak-kind}
 \end{figure}
 
+Figure~\ref{fig:leak-kind} visualises this breakdown.
 Structured patterns (emails, phones, IPs, SSNs) are fully
 detected.  NER catches most person names but struggles with
 organisation names (especially when they resemble common nouns)
@@ -678,6 +689,7 @@ A           & 315   & 346   & 345   & 362 \\
 \end{tabular}
 \end{table}
 
+Table~\ref{tab:latency} reports the median latency per option.
 Option B and B+H add $<$50\,ms overhead (dominated by NER
 initialisation amortised across requests).  Option B+C adds
 $\sim$1--2 seconds per request due to the local Ollama model call
@@ -689,7 +701,8 @@ for the classifier call (one Ollama round-trip with a 3B model).
 
 \paragraph{Option D (TEE).}
 We implement a client-side attestation verifier for AWS Nitro
-Enclaves that checks the attestation document's structure, PCR
+Enclaves~\cite{nitro-enclaves} that checks the attestation
+document's structure, PCR
 values, and certificate chain before sending plaintext.  A full
 end-to-end demo (vLLM inside a Nitro Enclave serving Llama-3)
 requires dedicated AWS infrastructure and is left as a deployment
@@ -701,9 +714,9 @@ We implement a protocol stub that simulates splitting a model at
 layer 4: the client computes random ``activations'' and POSTs them
 to a remote endpoint.  In a real Petals deployment, the activations
 would be the output of the first 4 transformer layers.  The privacy
-risk is activation inversion; recent work shows that early-layer
-activations can be partially decoded, especially for short
-sequences.
+risk is activation inversion~\cite{activation-inversion}; recent
+work shows that early-layer activations can be partially decoded,
+especially for short sequences.
 
 \paragraph{Option F (FHE classifier).}
 We demonstrate a simulated FHE binary classifier
