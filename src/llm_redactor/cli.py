@@ -1,0 +1,75 @@
+"""CLI entry point."""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+
+import typer
+from rich.console import Console
+from rich.table import Table
+
+from .config import Config, load_config
+
+app = typer.Typer(name="llm-redactor", no_args_is_help=True)
+console = Console()
+
+
+@app.command()
+def serve(
+    port: int = typer.Option(7789, help="HTTP proxy port"),
+    config_path: str = typer.Option("llm_redactor.yaml", "--config", help="Config file path"),
+) -> None:
+    """Start the llm-redactor HTTP proxy."""
+    import uvicorn
+
+    from .transport.http_proxy import configure
+
+    cfg = load_config(Path(config_path))
+    cfg.transport.http_port = port
+    configure(cfg)
+
+    console.print(f"[bold]llm-redactor[/bold] proxy on port {port}")
+    uvicorn.run(
+        "llm_redactor.transport.http_proxy:app",
+        host="127.0.0.1",
+        port=port,
+        log_level="info",
+    )
+
+
+@app.command()
+def mcp(
+    config_path: str = typer.Option("llm_redactor.yaml", "--config", help="Config file path"),
+) -> None:
+    """Start the llm-redactor MCP stdio server."""
+    from .transport.mcp_server import run_mcp
+
+    cfg = load_config(Path(config_path))
+    asyncio.run(run_mcp(cfg))
+
+
+@app.command()
+def detect(
+    text: str = typer.Argument(..., help="Text to scan for sensitive spans"),
+) -> None:
+    """Dry-run: detect sensitive spans without sending anything."""
+    from .detect.orchestrator import detect_all
+
+    spans = detect_all(text, use_ner=False)
+    if not spans:
+        console.print("[green]No sensitive spans detected.[/green]")
+        return
+
+    table = Table(title="Detected spans")
+    table.add_column("Kind")
+    table.add_column("Text")
+    table.add_column("Confidence")
+    table.add_column("Source")
+    for s in spans:
+        table.add_row(s.kind, s.text, f"{s.confidence:.2f}", s.source)
+    console.print(table)
+
+
+if __name__ == "__main__":
+    app()
