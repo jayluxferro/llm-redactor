@@ -1,10 +1,68 @@
-"""Runs all detectors and merges/deduplicates spans."""
+"""Runs all detectors, merges/deduplicates spans, and filters false positives."""
 
 from __future__ import annotations
+
+import re
 
 from .regex import detect_regex
 from .ner import detect_ner
 from .types import Span
+
+
+# Common false positives from NER — short words, abbreviations, and
+# generic terms that Presidio/spaCy frequently misclassify.
+_FP_SUPPRESS: set[str] = {
+    # Generic words misclassified as ORG
+    "pii", "api", "ssn", "dob", "ehr", "phi", "hipaa", "gdpr",
+    "sql", "csv", "json", "xml", "html", "http", "https", "url",
+    "llm", "nlp", "ner", "gpt", "ai", "ml", "dl",
+    # Time expressions misclassified as DATE_TIME
+    "today", "yesterday", "tomorrow", "now", "recently",
+    # Quarter references misclassified as various
+    "q1", "q2", "q3", "q4",
+    # Common nouns misclassified as LOCATION
+    "café", "cafe", "office", "home", "here", "there",
+}
+
+# Patterns for false positives that need regex matching.
+_FP_PATTERNS: list[re.Pattern[str]] = [
+    # Drug names commonly misclassified as PERSON
+    re.compile(
+        r"(?i)^(?:lisinopril|metformin|atorvastatin|omeprazole|amlodipine|"
+        r"metoprolol|losartan|albuterol|gabapentin|hydrochlorothiazide|"
+        r"levothyroxine|simvastatin|ibuprofen|acetaminophen|amoxicillin|"
+        r"azithromycin|ciprofloxacin|prednisone|sertraline|fluoxetine)$"
+    ),
+    # DOB/SSN labels misclassified as ORG
+    re.compile(r"(?i)^(?:dob|ssn|ein|tin|mrn)\s"),
+]
+
+
+def _is_false_positive(span: Span) -> bool:
+    """Check if a NER span is a known false positive."""
+    if span.source != "ner":
+        return False
+
+    text_lower = span.text.strip().lower()
+
+    # Exact match suppression.
+    if text_lower in _FP_SUPPRESS:
+        return True
+
+    # Single character or very short non-PII.
+    if len(text_lower) <= 2 and span.kind not in {"ssn", "ip_address"}:
+        return True
+
+    # Pattern match suppression.
+    for pattern in _FP_PATTERNS:
+        if pattern.match(span.text.strip()):
+            return True
+
+    # Low-confidence NER on very short text (likely noise).
+    if span.confidence < 0.4 and len(span.text) < 6:
+        return True
+
+    return False
 
 
 def _merge_overlapping(spans: list[Span]) -> list[Span]:
@@ -32,6 +90,7 @@ def detect_all(text: str, use_ner: bool = True) -> list[Span]:
     spans = detect_regex(text)
 
     if use_ner:
-        spans.extend(detect_ner(text))
+        ner_spans = detect_ner(text)
+        spans.extend(s for s in ner_spans if not _is_false_positive(s))
 
     return _merge_overlapping(spans)

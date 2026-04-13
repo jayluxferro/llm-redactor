@@ -353,6 +353,18 @@ uv run python -m evals.run_eval --option B --use-ner
 uv run python -m evals.run_eval --option A+B+C --use-ner -w wl1_pii
 ```
 
+## Known limitations
+
+- **Non-English names**: The NER model (`en_core_web_sm`) is English-only.
+  Names with diacritics (e.g. Maria Garcia-Lopez) may not be detected.
+  Use a multilingual spaCy model or add custom patterns for your locale.
+- **NER false positives**: Presidio may flag drug names as persons,
+  abbreviations as organizations, or common words as locations. The
+  orchestrator suppresses known false positives but can't catch all of them.
+- **Implicit identity**: Phrases like "the CFO's wife" identify individuals
+  without containing PII tokens. Only Option C (rephrase) addresses this,
+  and even then semantic leak rates remain high (95%+).
+
 ## Tests
 
 ```bash
