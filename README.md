@@ -6,59 +6,138 @@ transforms sensitive content **before** it leaves the device, then
 restores placeholders in the response so the user gets a normal
 answer.
 
-This repo is a **research + implementation project**. The plan:
+## Paper
 
-1. Freeze the design for the eight options listed below.
-2. Build a reference implementation covering the options that are
-   practical today.
-3. Run a rigorous evaluation measuring leak rates, quality loss,
-   latency, and failure modes per option and per combination.
-4. Publish the results as a LaTeX paper on arXiv
-   (`paper/paper.tex`).
+> **LLM-Redactor: An Empirical Evaluation of Eight Techniques for
+> Privacy-Preserving LLM Requests**
+>
+> Justice Owusu Agyemang, Jerry John Kponyo, Elliot Amponsah,
+> Godfred Manu Addo Boakye, Kwame Opuni-Boachie Obour Agyekum
 
-**Novelty angle**: the eight options span a spectrum from
-"redact-and-restore pipelines" (practical today) to "homomorphic
-inference" (research-stage). Nobody has measured them head-to-head
-on a common benchmark, nobody has quantified the residual leak rate
-of each technique, and nobody has published a decision rule for
-which option to pick given a threat model.
+We evaluate eight techniques on a common benchmark of 1,300 synthetic
+prompts with 4,014 ground-truth annotations across four workload
+classes. See [`paper/paper.tex`](paper/paper.tex) for the full paper.
 
 ## The eight options
 
-| Option | Short name | What it does |
-|---|---|---|
-| **A** | `local-only` | Never call the cloud. Run inference entirely on a local model. |
-| **B** | `redact` | Local NER + regex pipeline detects sensitive spans, replaces with typed placeholders, restores on response. |
-| **C** | `rephrase` | Local model semantically rewrites the prompt to remove identifying details while preserving intent. |
-| **D** | `tee` | Send to a Trusted Execution Environment (Nitro Enclave, SGX, Apple PCC, H100 CC). Plaintext only exists inside attested hardware. |
-| **E** | `split-inference` | Run the first layers of an open-weight model locally, send activations to a remote host for the remaining layers. |
-| **F** | `fhe` | Fully homomorphic encryption — cloud operates on ciphertext. Practical only for very small models today. |
-| **G** | `mpc` | Secret-share the input across multiple non-colluding servers. |
-| **H** | `dp-noise` | Inject calibrated noise into the input; good for statistical workloads, lossy for qualitative ones. |
+| Option | Short name | What it does | Practical today? |
+|---|---|---|---|
+| **A** | `local-only` | Run inference entirely on a local model | Yes (bounded quality) |
+| **B** | `redact` | NER + regex detection, typed placeholders, restore on response | Yes |
+| **C** | `rephrase` | Local model semantically rewrites the prompt | Yes (quality-dependent) |
+| **D** | `tee` | Forward to a Trusted Execution Environment (Nitro, SGX, PCC) | Partial |
+| **E** | `split-inference` | Run first layers locally, send activations to remote | Research |
+| **F** | `fhe` | Fully homomorphic encryption on ciphertext | Research (tiny models) |
+| **G** | `mpc` | Secret-share input across non-colluding servers | Research |
+| **H** | `dp-noise` | Calibrated word-level noise for statistical workloads | Yes (lossy) |
 
-See `docs/OPTIONS.md` for the deep dive on each.
+See [`docs/OPTIONS.md`](docs/OPTIONS.md) for the deep dive.
 
-## How to pick it up
+## Key results
 
-If you're a fresh agent landing here, read in this order:
+| Option | WL1 (PII) | WL2 (Secrets) | WL3 (Implicit) | WL4 (Code) |
+|--------|-----------|---------------|----------------|------------|
+| Baseline | 100% | 100% | 100% | 100% |
+| B (NER) | 15.3% | 31.8% | 95.0% | 58.5% |
+| B+C | 13.9% | 31.6% | 94.1% | 55.8% |
+| A | 6.3% | 24.2% | 46.8% | 59.9% |
+| E/F/G | 0% | 0% | 0% | 0% |
 
-1. `AGENT.md`
-2. `docs/ARCHITECTURE.md`
-3. `docs/OPTIONS.md`
-4. `docs/THREAT_MODEL.md`
-5. `docs/API.md`
-6. `docs/EVALUATION.md`
-7. `docs/PAPER.md`
-8. `.agent/memory/origin.md`, `decisions.md`, `next-steps.md`, `user-profile.md`, `gotchas.md`
+*Combined leak rate (exact + partial). Lower is better. E/F/G are
+protocol stubs — 0% reflects that tokens never leave the device.*
 
-Then propose your first action and wait for confirmation before coding.
+## Quick start
 
-## Status
+```bash
+# Install
+uv sync
 
-- [x] Research brief + option list
-- [x] Agent handoff docs
-- [x] Paper skeleton (`paper/paper.tex`)
-- [ ] Reference implementation (A, B, C today; D experimental; E–H research)
-- [ ] Evaluation harness
-- [ ] Paper first draft
-- [ ] arXiv submission
+# Run the HTTP proxy (OpenAI-compatible)
+uv run llm-redactor serve --port 7789
+
+# Dry-run detection
+uv run llm-redactor detect "Contact alice@example.com for API key sk-abc123" --redact
+
+# Run the MCP stdio server
+uv run llm-redactor mcp
+
+# Run the evaluation harness
+uv run python -m evals.run_eval --option B --use-ner
+```
+
+## Project structure
+
+```
+src/llm_redactor/
+  detect/          # NER + regex detection
+  redact/          # Placeholder generation and restoration
+  rephrase/        # Local model semantic rephrasing (Option C)
+  noise/           # Differential privacy noise (Option H)
+  pipeline/        # Option A-H pipeline implementations
+  transport/       # HTTP proxy, MCP server, cloud/TEE/FHE/MPC clients
+  config.py        # YAML config with env overrides
+  cli.py           # Typer CLI
+
+evals/
+  workloads/       # 4 synthetic workloads (1,300 samples, 4,014 annotations)
+  runner.py        # Evaluation runner for all options
+  leak_meter.py    # Exact, partial, and semantic leak metrics
+  utility_meter.py # Judge-model A/B utility comparison
+  run_eval.py      # CLI entry point
+
+paper/
+  paper.tex        # LaTeX source
+  bibliography.bib # References
+  figures/         # Generated figures
+
+docs/              # Architecture, options, threat model, API, evaluation design
+```
+
+## Documentation
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — System design
+- [`docs/OPTIONS.md`](docs/OPTIONS.md) — All eight options in detail
+- [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) — Actors, assets, attack scenarios
+- [`docs/API.md`](docs/API.md) — MCP + HTTP interfaces
+- [`docs/EVALUATION.md`](docs/EVALUATION.md) — Metrics and workload design
+
+## Configuration
+
+```yaml
+pipeline:
+  opt_b_redact: { enabled: true, strict: true }
+  opt_c_rephrase: { enabled: false }
+  opt_h_dp_noise: { enabled: false, epsilon: 4.0 }
+cloud_target:
+  endpoint: https://api.openai.com/v1
+  api_key_env: OPENAI_API_KEY
+local_model:
+  endpoint: http://127.0.0.1:11434
+  chat_model: llama3.2:3b
+```
+
+Precedence: environment variables > YAML file > defaults.
+
+## Tests
+
+```bash
+uv run pytest -v   # 38 tests
+```
+
+## License
+
+MIT
+
+## Citation
+
+```bibtex
+@article{agyemang2026llmredactor,
+  title={LLM-Redactor: An Empirical Evaluation of Eight Techniques
+         for Privacy-Preserving LLM Requests},
+  author={Agyemang, Justice Owusu and Kponyo, Jerry John and
+          Amponsah, Elliot and Boakye, Godfred Manu Addo and
+          Agyekum, Kwame Opuni-Boachie Obour},
+  year={2026},
+  url={https://github.com/jayluxferro/llm-redactor}
+}
+```

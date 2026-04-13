@@ -34,3 +34,18 @@ evals/results*/
 
 # pytest
 .pytest_cache/
+
+# Agent-internal (not for public repo)
+.agent/
+AGENT.md
+FIRST_INSTRUCTION.md
+CLAUDE.md
+
+# Build artifacts
+arxiv_submission/
+arxiv_submission.tar.gz
+paper/paper.pdf
+
+# Utility/semantic eval results (regenerable)
+evals/results_utility*/
+evals/results_semantic/
