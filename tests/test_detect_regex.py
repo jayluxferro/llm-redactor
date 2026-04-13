@@ -30,7 +30,7 @@ def test_detects_pem_key():
     text = "-----BEGIN RSA PRIVATE KEY-----\nMIIE..."
     spans = detect_regex(text)
     kinds = {s.kind for s in spans}
-    assert "pem_private_key" in kinds
+    assert "private_key_pem" in kinds
 
 
 def test_no_false_positive_on_plain_text():
