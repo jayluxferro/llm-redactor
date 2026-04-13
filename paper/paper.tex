@@ -329,7 +329,7 @@ A local NER detector (Presidio~\cite{presidio} with
 spaCy~\cite{spacy} \texttt{en\_core\_web\_sm}) plus regex pattern
 families identifies sensitive spans.  Each span
 is replaced with a typed, stable placeholder
-(\texttt{{\fontfamily{cmtt}\selectfont\char"27E8}EMAIL\_1{\fontfamily{cmtt}\selectfont\char"27E9}}).
+(\texttt{$\langle$EMAIL\_1$\rangle$}).
 Two occurrences of the same value map to the same placeholder
 (coreference stability).  The reverse map lives only in process
 memory---never persisted to disk.  On the response path,
@@ -456,7 +456,7 @@ request rather than silently pass it through.
 
 \paragraph{Placeholder design.}
 Placeholders use rare Unicode angle brackets
-(\texttt{{\fontfamily{cmtt}\selectfont\char"27E8}KIND\_N{\fontfamily{cmtt}\selectfont\char"27E9}})
+(\texttt{$\langle$KIND\_N$\rangle$})
 to avoid collision with user text that might contain literal
 \texttt{\{EMAIL\_1\}} syntax.  Two references to the same
 original value receive the same placeholder (coreference
@@ -785,7 +785,7 @@ for the classifier call (one Ollama round-trip with a 3B model).
 Redaction changes the token count of outgoing requests.
 Somewhat counter-intuitively, Option~B \emph{reduces} token
 count because typed placeholders
-(\texttt{{\fontfamily{cmtt}\selectfont\char"27E8}EMAIL\_1{\fontfamily{cmtt}\selectfont\char"27E9}})
+(\texttt{$\langle$EMAIL\_1$\rangle$})
 are shorter than the values they replace (email addresses,
 API keys, full names).  Table~\ref{tab:cost} reports the
 word-level token delta.
