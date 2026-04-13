@@ -155,7 +155,7 @@ def run_utility_eval(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Online utility evaluation")
     parser.add_argument("--workload", "-w", default="wl1_pii", choices=["wl1_pii", "wl2_secrets", "wl3_implicit", "wl4_code"])
-    parser.add_argument("--option", default="B", choices=["B", "B+C", "B+H", "B+D"])
+    parser.add_argument("--option", default="B", choices=["B", "B+C", "B+H", "B+D", "A+B", "A+B+C"])
     parser.add_argument("--use-ner", action="store_true", default=True)
     parser.add_argument("--max-samples", type=int, default=10)
     parser.add_argument("--cloud-endpoint", default="http://localhost:11435/v1")
