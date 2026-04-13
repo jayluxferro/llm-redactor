@@ -16,7 +16,7 @@ answer.
 
 We evaluate eight techniques on a common benchmark of 1,300 synthetic
 prompts with 4,014 ground-truth annotations across four workload
-classes. See [`paper/paper.tex`](paper/paper.tex) for the full paper.
+classes.
 
 ## The eight options
 
@@ -313,11 +313,6 @@ evals/
 
 hooks/
   detect-sensitive.sh  # Claude Code PreToolUse hook
-
-paper/
-  paper.tex        # LaTeX source
-  bibliography.bib # References
-  figures/         # Generated figures
 
 docs/              # Architecture, options, threat model, API, evaluation design
 ```

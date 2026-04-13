@@ -45,7 +45,7 @@ CLAUDE.md
 arxiv_submission/
 arxiv_submission.tar.gz
 arxiv_submission.zip
-paper/paper.pdf
+paper/
 
 # Utility/semantic eval results (regenerable)
 evals/results_utility*/
