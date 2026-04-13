@@ -49,3 +49,6 @@ paper/paper.pdf
 # Utility/semantic eval results (regenerable)
 evals/results_utility*/
 evals/results_semantic/
+
+# Misc
+git-push
