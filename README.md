@@ -65,6 +65,69 @@ uv run llm-redactor mcp
 uv run python -m evals.run_eval --option B --use-ner
 ```
 
+## Using with a coding agent
+
+### Transparent HTTP proxy (recommended)
+
+The agent doesn't know redaction is happening — you just swap the API URL.
+
+```bash
+# Terminal 1: start the redactor proxy
+uv run llm-redactor serve --port 7789
+```
+
+Then point your agent at it:
+
+```bash
+# Claude Code
+export OPENAI_API_BASE=http://localhost:7789/v1
+claude
+
+# Aider
+aider --openai-api-base http://localhost:7789/v1
+
+# Cursor / Continue / any OpenAI-compatible agent
+# Set api_base: http://localhost:7789/v1 in the agent's config
+```
+
+The proxy intercepts every request, redacts PII/secrets, forwards to
+the real cloud endpoint, restores placeholders in the response, and
+returns a normal answer. The agent never sees placeholders.
+
+### MCP server (explicit tools)
+
+For MCP-capable agents (Claude Code, Claude Desktop), add to your
+MCP config:
+
+```json
+{
+  "mcpServers": {
+    "llm-redactor": {
+      "command": "uv",
+      "args": ["--directory", "/path/to/llm-redactor", "run", "llm-redactor", "mcp"]
+    }
+  }
+}
+```
+
+This exposes three tools:
+
+- **`redact.transform`** — full pipeline: detect, redact, forward to cloud, restore response
+- **`redact.detect`** — dry-run: show what would be redacted
+- **`redact.stats`** — request/detection/refusal counters
+
+### Proxy vs MCP
+
+| | HTTP Proxy | MCP |
+|---|---|---|
+| Agent awareness | None (transparent) | Agent calls tools explicitly |
+| Coverage | All requests automatically | Only when agent chooses |
+| Works with | Any OpenAI-compatible client | MCP-capable agents only |
+| Streaming | Supported | Not yet |
+
+For most use cases, the HTTP proxy is better — it catches everything
+without relying on the agent to remember to use the tools.
+
 ## Project structure
 
 ```
