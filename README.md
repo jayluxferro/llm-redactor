@@ -338,12 +338,6 @@ uv run python -m evals.run_eval --option B --use-ner
 
 # Specific option and workload
 uv run python -m evals.run_eval --option A+B+C --use-ner -w wl1_pii
-
-# Build the paper
-make paper
-
-# Build arXiv submission zip
-make arxiv
 ```
 
 ## Tests
