@@ -85,6 +85,16 @@ def _merge_overlapping(spans: list[Span]) -> list[Span]:
     return merged
 
 
+def configure_detection(
+    *,
+    ner_model: str | None = None,
+    ner_confidence_floor: float | None = None,
+) -> None:
+    """Configure detection parameters. Call before first detect_all()."""
+    from .ner import configure_ner
+    configure_ner(model_name=ner_model, confidence_floor=ner_confidence_floor)
+
+
 def detect_all(text: str, use_ner: bool = True) -> list[Span]:
     """Run all enabled detectors and return merged spans."""
     spans = detect_regex(text)
@@ -94,3 +104,36 @@ def detect_all(text: str, use_ner: bool = True) -> list[Span]:
         spans.extend(s for s in ner_spans if not _is_false_positive(s))
 
     return _merge_overlapping(spans)
+
+
+async def detect_all_validated(
+    text: str,
+    *,
+    use_ner: bool = True,
+    ollama_endpoint: str = "http://127.0.0.1:11434",
+    ollama_model: str = "llama3.2:3b",
+) -> list[Span]:
+    """Run all detectors, then validate NER spans with a local LLM.
+
+    This is the high-accuracy path: regex + NER + LLM validation.
+    Adds one Ollama round-trip but dramatically reduces false positives
+    (drug names, abbreviations, generic words) while confirming real PII.
+    """
+    from .llm_validator import validate_spans
+
+    spans = detect_regex(text)
+
+    if use_ner:
+        ner_spans = detect_ner(text)
+        spans.extend(s for s in ner_spans if not _is_false_positive(s))
+
+    merged = _merge_overlapping(spans)
+
+    # LLM validation pass — only validates NER spans (regex are auto-kept).
+    validated = await validate_spans(
+        text, merged,
+        endpoint=ollama_endpoint,
+        model=ollama_model,
+    )
+
+    return validated

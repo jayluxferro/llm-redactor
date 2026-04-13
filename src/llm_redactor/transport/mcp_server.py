@@ -26,7 +26,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from ..config import Config, load_config
-from ..detect.orchestrator import detect_all
+from ..detect.orchestrator import detect_all, detect_all_validated
 from ..redact.placeholder import redact
 from ..redact.restore import restore
 
@@ -147,7 +147,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     if name == "llm.chat":
         return await _handle_llm_chat(arguments)
     elif name == "redact.scrub":
-        return _handle_scrub(arguments)
+        return await _handle_scrub(arguments)
     elif name == "redact.restore":
         return _handle_restore(arguments)
     elif name == "redact.detect":
@@ -242,13 +242,25 @@ async def _handle_llm_chat(arguments: dict[str, Any]) -> list[TextContent]:
     }))]
 
 
-def _handle_scrub(arguments: dict[str, Any]) -> list[TextContent]:
+async def _handle_scrub(arguments: dict[str, Any]) -> list[TextContent]:
     _stats["requests"] += 1
 
     text = arguments.get("text", "")
     use_ner = arguments.get("use_ner", True)
 
-    spans = detect_all(text, use_ner=use_ner)
+    # Use LLM validation if configured.
+    if _config and _config.pipeline.llm_validation.enabled:
+        ollama_endpoint = _config.local_model.endpoint
+        ollama_model = _config.pipeline.llm_validation.model or _config.local_model.chat_model
+        spans = await detect_all_validated(
+            text,
+            use_ner=use_ner,
+            ollama_endpoint=ollama_endpoint,
+            ollama_model=ollama_model,
+        )
+    else:
+        spans = detect_all(text, use_ner=use_ner)
+
     _stats["detections"] += len(spans)
 
     if not spans:

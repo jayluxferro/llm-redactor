@@ -15,6 +15,16 @@ app = typer.Typer(name="llm-redactor", no_args_is_help=True)
 console = Console()
 
 
+def _apply_detection_config(cfg: Config) -> None:
+    """Apply detection settings from config (NER model, confidence floor)."""
+    from .detect.orchestrator import configure_detection
+
+    configure_detection(
+        ner_model=cfg.local_model.ner_model,
+        ner_confidence_floor=cfg.local_model.ner_confidence_floor,
+    )
+
+
 @app.command()
 def serve(
     port: int = typer.Option(7789, help="HTTP proxy port"),
@@ -27,6 +37,7 @@ def serve(
 
     cfg = load_config(Path(config_path))
     cfg.transport.http_port = port
+    _apply_detection_config(cfg)
     configure(cfg)
 
     console.print(f"[bold]llm-redactor[/bold] proxy on port {port}")
@@ -46,6 +57,7 @@ def mcp(
     from .transport.mcp_server import run_mcp
 
     cfg = load_config(Path(config_path))
+    _apply_detection_config(cfg)
     asyncio.run(run_mcp(cfg))
 
 
@@ -61,6 +73,7 @@ def detect(
     from .detect.regex import load_custom_patterns
 
     cfg = load_config(Path(config_path))
+    _apply_detection_config(cfg)
     if cfg.policy.extend_patterns_file:
         load_custom_patterns(cfg.policy.extend_patterns_file)
 

@@ -14,7 +14,8 @@ class LocalModelConfig:
     backend: str = "ollama"
     endpoint: str = "http://127.0.0.1:11434"
     chat_model: str = "llama3.2:3b"
-    ner_model: str | None = None
+    ner_model: str | None = None  # e.g. en_core_web_trf, xx_ent_wiki_sm
+    ner_confidence_floor: float = 0.5  # drop NER results below this
 
 
 @dataclass
@@ -27,6 +28,12 @@ class CloudTargetConfig:
 @dataclass
 class OptionConfig:
     enabled: bool = False
+
+
+@dataclass
+class LLMValidationConfig:
+    enabled: bool = False  # opt-in: adds one Ollama round-trip
+    model: str = ""  # empty = use local_model.chat_model
 
 
 @dataclass
@@ -72,6 +79,7 @@ class OptionHConfig(OptionConfig):
 
 @dataclass
 class PipelineConfig:
+    llm_validation: LLMValidationConfig = field(default_factory=LLMValidationConfig)
     opt_a_local_only: OptionConfig = field(default_factory=OptionConfig)
     opt_b_redact: OptionBConfig = field(default_factory=OptionBConfig)
     opt_c_rephrase: OptionCConfig = field(default_factory=OptionCConfig)

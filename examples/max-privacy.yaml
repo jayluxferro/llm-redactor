@@ -30,6 +30,11 @@ transport:
   http_port: 7789
 
 pipeline:
+  # LLM validation: second-pass check on NER detections using local model.
+  # Catches false positives (drug names as persons, abbreviations as orgs).
+  # Adds one Ollama round-trip (~300ms). Recommended when accuracy matters.
+  llm_validation: { enabled: true }
+
   # Option A: route trivial requests locally (94% of PII workload)
   opt_a_local_only: { enabled: true }
 
