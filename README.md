@@ -175,17 +175,77 @@ Returns:
 }
 ```
 
-### Proxy vs MCP
+#### One-shot: `llm.chat` (easiest for MCP)
 
-| | HTTP Proxy | MCP |
-|---|---|---|
-| Agent awareness | None (transparent) | Agent calls tools explicitly |
-| Coverage | All requests automatically | Only when agent chooses |
-| Works with | Any OpenAI-compatible client | MCP-capable agents only |
-| Streaming | Supported | Not yet |
+If you want the agent to use a single tool that handles everything
+(scrub → LLM call → restore), use `llm.chat`:
 
-For most use cases, the HTTP proxy is better — it catches everything
-without relying on the agent to remember to use the tools.
+```json
+{
+  "messages": [
+    {"role": "user", "content": "Help debug this for alice@example.com, API key sk-abc123"}
+  ],
+  "model": "gpt-4o"
+}
+```
+
+Returns the LLM response with all sensitive content redacted in
+transit and restored in the result. The agent never sees placeholders.
+Requires `cloud_target` in `llm_redactor.yaml` or env vars.
+
+### Claude Code hook (automatic warnings)
+
+Install a pre-tool hook that warns when sensitive content is about
+to leave through any tool:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/llm-redactor/hooks/detect-sensitive.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The hook scans tool inputs for emails, API keys, bearer tokens, PEM
+keys, and SSN patterns. If found, it blocks the tool call with a
+warning suggesting `redact.scrub` or `llm.chat` instead.
+
+### Dual mode: proxy + MCP (belt and suspenders)
+
+Run both for maximum coverage:
+
+```bash
+# Terminal 1: proxy catches all OpenAI-compatible traffic
+uv run llm-redactor serve --port 7789
+
+# Agent config: point at proxy AND load MCP tools
+export OPENAI_API_BASE=http://localhost:7789/v1
+```
+
+With MCP config also loaded, the agent has:
+- **Proxy**: silently redacts everything going to the cloud
+- **`redact.detect`**: inspect what the proxy would catch
+- **`redact.scrub`/`restore`**: manual control when needed
+- **Hook**: warns if sensitive data slips through other tools
+
+### Comparison
+
+| | HTTP Proxy | `llm.chat` | `scrub`/`restore` | Hook |
+|---|---|---|---|---|
+| Agent awareness | None | Calls one tool | Calls two tools | Warning only |
+| Coverage | All requests | When agent uses it | When agent uses it | All tool calls |
+| Cloud config needed | Yes | Yes | No | No |
+| Works with | Any client | MCP agents | MCP agents | Claude Code |
 
 ## Project structure
 
