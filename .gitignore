@@ -44,6 +44,7 @@ CLAUDE.md
 # Build artifacts
 arxiv_submission/
 arxiv_submission.tar.gz
+arxiv_submission.zip
 paper/paper.pdf
 
 # Utility/semantic eval results (regenerable)
