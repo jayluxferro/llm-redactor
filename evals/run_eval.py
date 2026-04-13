@@ -50,7 +50,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--option",
-        choices=["A", "B", "B+C", "B+D", "B+H", "D", "E", "F", "G", "baseline"],
+        choices=["A", "B", "B+C", "B+D", "B+H", "A+B", "A+B+C", "D", "E", "F", "G", "baseline"],
         default="B",
         help="Option to evaluate",
     )

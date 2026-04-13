@@ -473,6 +473,129 @@ async def run_option_bd_offline(
     )
 
 
+async def run_option_ab_offline(
+    sample: Sample,
+    *,
+    use_ner: bool = False,
+    ollama_endpoint: str = "http://127.0.0.1:11434",
+    ollama_model: str = "llama3.2:3b",
+) -> RunResult:
+    """Run Option A+B: classify, route locally if trivial, redact if complex.
+
+    For leak measurement: if TRIVIAL, outgoing_text = "" (nothing sent).
+    If COMPLEX, outgoing_text = redacted text (same as B).
+    """
+    t0 = time.perf_counter()
+
+    text = sample.text
+    classification = await classify(
+        text, endpoint=ollama_endpoint, model=ollama_model,
+    )
+
+    if classification == "TRIVIAL":
+        elapsed = (time.perf_counter() - t0) * 1000
+        return RunResult(
+            sample_id=sample.id,
+            option="A+B(local)",
+            original_text=text,
+            outgoing_text="",
+            response_text="",
+            restored_text="",
+            detections=[],
+            reverse_map={},
+            latency_ms=elapsed,
+            mode="offline",
+        )
+
+    # COMPLEX: apply Option B redaction.
+    spans = detect_all(text, use_ner=use_ner)
+    result = redact(text, spans)
+    elapsed = (time.perf_counter() - t0) * 1000
+
+    return RunResult(
+        sample_id=sample.id,
+        option="A+B(cloud)",
+        original_text=text,
+        outgoing_text=result.redacted_text,
+        response_text="",
+        restored_text="",
+        detections=[
+            {"kind": s.kind, "confidence": s.confidence, "text": s.text, "source": s.source}
+            for s in spans
+        ],
+        reverse_map=result.reverse_map,
+        latency_ms=elapsed,
+        mode="offline",
+    )
+
+
+async def run_option_abc_offline(
+    sample: Sample,
+    *,
+    use_ner: bool = False,
+    ollama_endpoint: str = "http://127.0.0.1:11434",
+    ollama_model: str = "llama3.2:3b",
+) -> RunResult:
+    """Run Option A+B+C: classify, route locally if trivial, redact+rephrase if complex."""
+    t0 = time.perf_counter()
+
+    text = sample.text
+    classification = await classify(
+        text, endpoint=ollama_endpoint, model=ollama_model,
+    )
+
+    if classification == "TRIVIAL":
+        elapsed = (time.perf_counter() - t0) * 1000
+        return RunResult(
+            sample_id=sample.id,
+            option="A+B+C(local)",
+            original_text=text,
+            outgoing_text="",
+            response_text="",
+            restored_text="",
+            detections=[],
+            reverse_map={},
+            latency_ms=elapsed,
+            mode="offline",
+        )
+
+    # COMPLEX: apply B then C.
+    spans = detect_all(text, use_ner=use_ner)
+    redaction_result = redact(text, spans)
+
+    rr = await rephrase_text(
+        redaction_result.redacted_text,
+        endpoint=ollama_endpoint,
+        model=ollama_model,
+    )
+    vr = validate_rephrase(redaction_result.redacted_text, rr.rephrased_text)
+
+    if vr.valid:
+        outgoing = rr.rephrased_text
+        option_label = "A+B+C(cloud)"
+    else:
+        outgoing = redaction_result.redacted_text
+        option_label = "A+B(cloud,C-rejected)"
+
+    elapsed = (time.perf_counter() - t0) * 1000
+
+    return RunResult(
+        sample_id=sample.id,
+        option=option_label,
+        original_text=text,
+        outgoing_text=outgoing,
+        response_text="",
+        restored_text="",
+        detections=[
+            {"kind": s.kind, "confidence": s.confidence, "text": s.text, "source": s.source}
+            for s in spans
+        ],
+        reverse_map=redaction_result.reverse_map,
+        latency_ms=elapsed,
+        mode="offline",
+    )
+
+
 def run_baseline(sample: Sample) -> RunResult:
     """Baseline: no redaction. The cloud sees everything.
 
@@ -562,6 +685,22 @@ def run_workload(
         elif option == "B+D":
             result = asyncio.run(
                 run_option_bd_offline(sample, use_ner=use_ner)
+            )
+            results.append(result)
+        elif option == "A+B":
+            result = asyncio.run(
+                run_option_ab_offline(
+                    sample, use_ner=use_ner,
+                    ollama_endpoint=ollama_endpoint, ollama_model=ollama_model,
+                )
+            )
+            results.append(result)
+        elif option == "A+B+C":
+            result = asyncio.run(
+                run_option_abc_offline(
+                    sample, use_ner=use_ner,
+                    ollama_endpoint=ollama_endpoint, ollama_model=ollama_model,
+                )
             )
             results.append(result)
         else:

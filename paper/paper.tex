@@ -14,6 +14,7 @@
 \usepackage{listings}
 \usepackage{xcolor}
 \usepackage{multirow}
+\usepackage{pifont}
 \usepackage[numbers,sort&compress]{natbib}
 
 \hypersetup{
@@ -253,6 +254,34 @@ we adopt in Option~H.
 Recent surveys~\cite{survey-yao,survey-das} catalogue LLM
 privacy risks and mitigations but do not provide a common-benchmark
 empirical comparison.  Our contribution is exactly that comparison.
+
+\paragraph{Positioning.}
+Table~\ref{tab:related} summarises how our work relates to
+existing systems.  To our knowledge, no prior work evaluates
+all eight technique classes on a common benchmark with
+ground-truth leak rates.
+
+\begin{table}[h]
+\centering
+\small
+\caption{Comparison with existing privacy tooling for LLM requests.}
+\label{tab:related}
+\begin{tabular}{lcccc}
+\toprule
+System & Techniques & Common & Leak & Combinations \\
+       & covered    & bench. & rates & evaluated \\
+\midrule
+Presidio~\cite{presidio}     & B (redact) & \ding{55} & \ding{55} & \ding{55} \\
+AWS Comprehend               & B (redact) & \ding{55} & \ding{55} & \ding{55} \\
+CrypTen~\cite{crypten}       & G (MPC)    & \ding{55} & \ding{55} & \ding{55} \\
+Concrete ML~\cite{zama}      & F (FHE)    & \ding{55} & \ding{55} & \ding{55} \\
+Petals~\cite{petals}         & E (split)  & \ding{55} & \ding{55} & \ding{55} \\
+Apple PCC~\cite{apple-pcc}   & D (TEE)    & \ding{55} & \ding{55} & \ding{55} \\
+\cite{dp-prompt}             & H (DP)     & \ding{55} & partial   & \ding{55} \\
+\textbf{This work}           & A--H (all) & \ding{51} & \ding{51} & \ding{51} \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \section{The Eight Options}
 \label{sec:options}
@@ -747,6 +776,39 @@ $\sim$1--2 seconds per request due to the local Ollama model call
 for rephrasing---acceptable for privacy-first workloads but not
 for latency-sensitive interactive use.  Option A adds $\sim$300\,ms
 for the classifier call (one Ollama round-trip with a 3B model).
+
+\subsection{Token cost}
+
+Redaction changes the token count of outgoing requests.
+Somewhat counter-intuitively, Option~B \emph{reduces} token
+count because typed placeholders
+(\texttt{{\fontfamily{cmtt}\selectfont\char"27E8}EMAIL\_1{\fontfamily{cmtt}\selectfont\char"27E9}})
+are shorter than the values they replace (email addresses,
+API keys, full names).  Table~\ref{tab:cost} reports the
+word-level token delta.
+
+\begin{table}[h]
+\centering
+\small
+\caption{Token count change from Option~B (NER) redaction.
+  Negative = fewer tokens sent to the cloud.}
+\label{tab:cost}
+\begin{tabular}{lrrr}
+\toprule
+Workload & Original & Outgoing & $\Delta$ \\
+\midrule
+WL1 PII      & 8{,}834 & 7{,}769 & $-$12.0\% \\
+WL2 Secrets  & 4{,}238 & 3{,}987 & $-$4.5\% \\
+WL3 Implicit & 4{,}193 & 3{,}905 & $-$7.1\% \\
+WL4 Code     & 9{,}914 & 9{,}511 & $-$4.0\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Redaction thus provides a modest cost saving ($-4$ to $-12$\%
+fewer tokens per request), partially offsetting the latency
+overhead.  DP noise (Option~H) performs 1:1 word substitution
+and does not change the token count.
 
 \subsection{Utility evaluation}
 
