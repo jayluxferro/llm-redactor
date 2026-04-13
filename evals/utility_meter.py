@@ -202,3 +202,69 @@ class WorkloadUtilitySummary:
     mean_score: float
     self_consistency_rate: float | None
     per_sample: list[UtilityResult]
+
+
+async def measure_workload_utility(
+    workload_name: str,
+    baseline_results: list[RunResult],
+    redacted_results: list[RunResult],
+    judge_config: UtilityConfig,
+    *,
+    max_samples: int | None = None,
+) -> WorkloadUtilitySummary:
+    """Run judge-model comparison across a workload.
+
+    Pairs baseline and redacted results by sample_id. Both must have
+    non-empty response_text (online mode) for meaningful comparison.
+    Falls back to self-consistency check for offline results.
+    """
+    baseline_map = {r.sample_id: r for r in baseline_results}
+    redacted_map = {r.sample_id: r for r in redacted_results}
+    common_ids = sorted(set(baseline_map) & set(redacted_map))
+    if max_samples is not None:
+        common_ids = common_ids[:max_samples]
+
+    per_sample: list[UtilityResult] = []
+    option = redacted_results[0].option if redacted_results else "unknown"
+
+    for sid in common_ids:
+        br = baseline_map[sid]
+        rr = redacted_map[sid]
+
+        has_responses = bool(br.response_text and rr.restored_text)
+
+        if has_responses:
+            ur = await judge_pair(br.original_text, br, rr, judge_config)
+        else:
+            # Offline: self-consistency only.
+            sc = check_self_consistency(br, rr)
+            ur = UtilityResult(
+                sample_id=sid,
+                option=rr.option,
+                preference="tie",
+                score=0.0,
+                judge_rationale="offline mode — self-consistency only",
+                self_consistent=sc,
+            )
+        per_sample.append(ur)
+
+    n = len(per_sample)
+    baseline_pref = sum(1 for u in per_sample if u.preference == "baseline")
+    redacted_pref = sum(1 for u in per_sample if u.preference == "redacted")
+    ties = sum(1 for u in per_sample if u.preference == "tie")
+    mean_score = sum(u.score for u in per_sample) / n if n else 0.0
+
+    sc_results = [u.self_consistent for u in per_sample if u.self_consistent is not None]
+    sc_rate = sum(sc_results) / len(sc_results) if sc_results else None
+
+    return WorkloadUtilitySummary(
+        workload=workload_name,
+        option=option,
+        num_samples=n,
+        baseline_preferred=baseline_pref,
+        redacted_preferred=redacted_pref,
+        ties=ties,
+        mean_score=mean_score,
+        self_consistency_rate=sc_rate,
+        per_sample=per_sample,
+    )

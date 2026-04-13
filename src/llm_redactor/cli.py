@@ -52,11 +52,19 @@ def mcp(
 @app.command()
 def detect(
     text: str = typer.Argument(..., help="Text to scan for sensitive spans"),
+    ner: bool = typer.Option(False, "--ner", help="Enable Presidio NER (slower, more accurate)"),
+    redact: bool = typer.Option(False, "--redact", help="Show redacted output preview"),
+    config_path: str = typer.Option("llm_redactor.yaml", "--config", help="Config file path"),
 ) -> None:
-    """Dry-run: detect sensitive spans without sending anything."""
+    """Dry-run: detect and optionally redact sensitive spans without sending anything."""
     from .detect.orchestrator import detect_all
+    from .detect.regex import load_custom_patterns
 
-    spans = detect_all(text, use_ner=False)
+    cfg = load_config(Path(config_path))
+    if cfg.policy.extend_patterns_file:
+        load_custom_patterns(cfg.policy.extend_patterns_file)
+
+    spans = detect_all(text, use_ner=ner)
     if not spans:
         console.print("[green]No sensitive spans detected.[/green]")
         return
@@ -69,6 +77,14 @@ def detect(
     for s in spans:
         table.add_row(s.kind, s.text, f"{s.confidence:.2f}", s.source)
     console.print(table)
+
+    if redact:
+        from .redact.placeholder import redact as do_redact
+
+        result = do_redact(text, spans)
+        console.print("\n[bold]Redacted output:[/bold]")
+        console.print(result.redacted_text)
+        console.print(f"\n[dim]{len(result.reverse_map)} placeholder(s) in reverse map[/dim]")
 
 
 if __name__ == "__main__":

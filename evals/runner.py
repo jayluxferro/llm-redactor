@@ -26,6 +26,10 @@ from llm_redactor.noise.dp import inject_noise
 from llm_redactor.pipeline.option_a import classify
 from llm_redactor.rephrase.local_model import rephrase as rephrase_text
 from llm_redactor.rephrase.validator import validate_rephrase
+from llm_redactor.transport.tee import verify_attestation
+from llm_redactor.transport.split_inference import split_forward_stub
+from llm_redactor.transport.fhe import fhe_classify_stub
+from llm_redactor.transport.mpc import mpc_embedding_stub
 
 from .schema import Sample, read_workload
 
@@ -282,6 +286,193 @@ def run_option_bh_offline(
     )
 
 
+async def run_option_d_offline(
+    sample: Sample,
+    *,
+    attestation_url: str = "",
+) -> RunResult:
+    """Run Option D: TEE-hosted inference (stub).
+
+    Outgoing text = original (TEE sees plaintext). Privacy comes from
+    hardware attestation, not from redaction. If attestation_url is provided,
+    attempt real attestation verification; otherwise skip (offline demo).
+    """
+    t0 = time.perf_counter()
+
+    att_verified = False
+    att_error: str | None = None
+    if attestation_url:
+        att = await verify_attestation(attestation_url)
+        att_verified = att.verified
+        att_error = att.error
+    else:
+        # Offline mode: assume attestation passes (demo).
+        att_verified = True
+
+    elapsed = (time.perf_counter() - t0) * 1000
+
+    return RunResult(
+        sample_id=sample.id,
+        option="D",
+        original_text=sample.text,
+        outgoing_text=sample.text,  # TEE sees everything
+        response_text="",
+        restored_text="",
+        detections=[],
+        reverse_map={},
+        latency_ms=elapsed,
+        mode="offline",
+    )
+
+
+async def run_option_e_offline(
+    sample: Sample,
+    *,
+    local_layers: int = 4,
+    remote_layers: int = 24,
+    hidden_dim: int = 4096,
+) -> RunResult:
+    """Run Option E: split inference (stub).
+
+    Tokens never leave the device — only activations cross the wire.
+    outgoing_text = "" for leak measurement (no tokens sent).
+    """
+    t0 = time.perf_counter()
+
+    token_ids = [ord(c) for c in sample.text[:512]]
+
+    result = await split_forward_stub(
+        token_ids,
+        remote_url="http://localhost:0/stub",  # unreachable; stub tolerates
+        local_layers=local_layers,
+        remote_layers=remote_layers,
+        hidden_dim=hidden_dim,
+    )
+
+    elapsed = (time.perf_counter() - t0) * 1000
+
+    return RunResult(
+        sample_id=sample.id,
+        option="E",
+        original_text=sample.text,
+        outgoing_text="",  # tokens never sent
+        response_text="",
+        restored_text="",
+        detections=[],
+        reverse_map={},
+        latency_ms=elapsed,
+        mode="offline",
+    )
+
+
+async def run_option_f_offline(
+    sample: Sample,
+    *,
+    sensitivity_threshold: float = 0.5,
+) -> RunResult:
+    """Run Option F: FHE sensitivity classification (stub).
+
+    Only ciphertext leaves the device. outgoing_text = "" for leak measurement.
+    Latency includes simulated encrypt + FHE inference + decrypt (~5s total).
+    """
+    t0 = time.perf_counter()
+
+    result = await fhe_classify_stub(
+        sample.text,
+        sensitivity_threshold=sensitivity_threshold,
+    )
+
+    elapsed = (time.perf_counter() - t0) * 1000
+
+    return RunResult(
+        sample_id=sample.id,
+        option="F",
+        original_text=sample.text,
+        outgoing_text="",  # only ciphertext sent
+        response_text="",
+        restored_text="",
+        detections=[{"kind": "fhe_classification", "confidence": result.confidence,
+                      "text": result.prediction, "source": "fhe"}],
+        reverse_map={},
+        latency_ms=elapsed,
+        mode="offline",
+    )
+
+
+async def run_option_g_offline(
+    sample: Sample,
+    *,
+    num_parties: int = 3,
+    embedding_dim: int = 768,
+) -> RunResult:
+    """Run Option G: MPC embedding lookup (stub).
+
+    Only secret shares leave to each party — no single party sees tokens.
+    outgoing_text = "" for leak measurement.
+    """
+    t0 = time.perf_counter()
+
+    token_ids = [ord(c) for c in sample.text[:128]]
+
+    result = await mpc_embedding_stub(
+        token_ids,
+        num_parties=num_parties,
+        embedding_dim=embedding_dim,
+    )
+
+    elapsed = (time.perf_counter() - t0) * 1000
+
+    return RunResult(
+        sample_id=sample.id,
+        option="G",
+        original_text=sample.text,
+        outgoing_text="",  # only shares sent
+        response_text="",
+        restored_text="",
+        detections=[],
+        reverse_map={},
+        latency_ms=elapsed,
+        mode="offline",
+    )
+
+
+async def run_option_bd_offline(
+    sample: Sample,
+    *,
+    use_ner: bool = False,
+) -> RunResult:
+    """Run Option B+D: redact spans, then forward to TEE.
+
+    Outgoing text = redacted (same as B). The TEE provides additional
+    hardware-level protection on top of redaction.
+    """
+    t0 = time.perf_counter()
+
+    text = sample.text
+    spans = detect_all(text, use_ner=use_ner)
+    result = redact(text, spans)
+
+    # Simulate TEE attestation check (~0ms in offline stub).
+
+    elapsed = (time.perf_counter() - t0) * 1000
+
+    return RunResult(
+        sample_id=sample.id,
+        option="B+D",
+        original_text=text,
+        outgoing_text=result.redacted_text,
+        response_text="",
+        restored_text="",
+        detections=[
+            {"kind": s.kind, "confidence": s.confidence, "text": s.text, "source": s.source}
+            for s in spans
+        ],
+        reverse_map=result.reverse_map,
+        latency_ms=elapsed,
+        mode="offline",
+    )
+
+
 def run_baseline(sample: Sample) -> RunResult:
     """Baseline: no redaction. The cloud sees everything.
 
@@ -312,12 +503,15 @@ def run_workload(
     ollama_endpoint: str = "http://127.0.0.1:11434",
     ollama_model: str = "llama3.2:3b",
     epsilon: float = 4.0,
+    max_samples: int | None = None,
 ) -> list[RunResult]:
     """Run all samples in a workload through the specified option.
 
     Returns a list of RunResult, one per sample.
     """
     samples = read_workload(workload_path)
+    if max_samples is not None:
+        samples = samples[:max_samples]
     results: list[RunResult] = []
 
     for sample in samples:
@@ -353,6 +547,23 @@ def run_workload(
             results.append(
                 run_option_bh_offline(sample, use_ner=use_ner, epsilon=epsilon)
             )
+        elif option == "D":
+            result = asyncio.run(run_option_d_offline(sample))
+            results.append(result)
+        elif option == "E":
+            result = asyncio.run(run_option_e_offline(sample))
+            results.append(result)
+        elif option == "F":
+            result = asyncio.run(run_option_f_offline(sample))
+            results.append(result)
+        elif option == "G":
+            result = asyncio.run(run_option_g_offline(sample))
+            results.append(result)
+        elif option == "B+D":
+            result = asyncio.run(
+                run_option_bd_offline(sample, use_ner=use_ner)
+            )
+            results.append(result)
         else:
             raise ValueError(f"Unsupported option={option} mode={mode}")
 

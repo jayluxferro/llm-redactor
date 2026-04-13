@@ -50,7 +50,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--option",
-        choices=["A", "B", "B+C", "B+H", "baseline"],
+        choices=["A", "B", "B+C", "B+D", "B+H", "D", "E", "F", "G", "baseline"],
         default="B",
         help="Option to evaluate",
     )
@@ -68,6 +68,12 @@ def main() -> None:
         "--ollama-model",
         default="llama3.2:3b",
         help="Ollama model (for Options A, C)",
+    )
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Limit samples per workload (useful for slow options like F, G)",
     )
     parser.add_argument(
         "--output", "-o",
@@ -96,6 +102,7 @@ def main() -> None:
             ollama_endpoint=args.ollama_endpoint,
             ollama_model=args.ollama_model,
             epsilon=args.epsilon,
+            max_samples=args.max_samples,
         )
         print(f"  {len(results)} samples processed")
 

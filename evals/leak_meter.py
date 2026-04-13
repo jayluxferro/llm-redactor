@@ -114,6 +114,68 @@ def _has_partial_leak(annotation_text: str, outgoing: str) -> bool:
 
 
 @dataclass
+class SemanticLeakResult:
+    """Semantic leak measurement for a single sample (WL3 implicit identity)."""
+
+    sample_id: str
+    option: str
+    still_identifies: bool
+    judge_rationale: str
+
+
+async def measure_semantic_leak(
+    sample: Sample,
+    run_result: RunResult,
+    *,
+    ollama_endpoint: str = "http://127.0.0.1:11434",
+    ollama_model: str = "llama3.2:3b",
+) -> SemanticLeakResult:
+    """Use a local judge model to determine if redacted text still
+    identifies the individual/organisation described in the annotation.
+
+    This is the appropriate metric for WL3 (implicit identity), where
+    substring matching produces noisy results.
+    """
+    import httpx
+
+    annotations_desc = "; ".join(
+        f"{a.kind}: {a.text}" for a in sample.annotations
+    )
+
+    prompt = (
+        f"Original text describes these sensitive entities: {annotations_desc}\n\n"
+        f"Redacted/transformed text:\n{run_result.outgoing_text}\n\n"
+        f"Can the redacted text still be used to identify the same person or "
+        f"organisation? Answer YES or NO, then explain in one sentence."
+    )
+
+    url = f"{ollama_endpoint.rstrip('/')}/api/chat"
+    body = {
+        "model": ollama_model,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+        "options": {"temperature": 0.0, "num_predict": 60},
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, json=body)
+            resp.raise_for_status()
+            raw = resp.json().get("message", {}).get("content", "")
+    except Exception:
+        raw = "ERROR"
+
+    still_identifies = raw.strip().upper().startswith("YES")
+
+    return SemanticLeakResult(
+        sample_id=sample.id,
+        option=run_result.option,
+        still_identifies=still_identifies,
+        judge_rationale=raw.strip()[:200],
+    )
+
+
+@dataclass
 class WorkloadLeakSummary:
     """Aggregate leak metrics across a workload."""
 

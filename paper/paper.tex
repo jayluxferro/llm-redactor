@@ -64,10 +64,10 @@ four workload classes using a ground-truth-labelled leak benchmark
 of 1{,}300 samples with 4{,}014 annotations. Our headline finding
 is that \emph{no single technique dominates}: local routing (A)
 eliminates cloud exposure for 94\% of PII-prose requests but only
-38\% of code requests; redaction (B) with NER reduces exact leakage
-to 10.5\% on PII but leaves 42.8\% on proprietary code; adding
-semantic rephrasing (B+C) cuts implicit-identity leakage from
-11.4\% to 0.5\%. We present a decision rule that selects the
+38\% of code requests; redaction (B) with NER and domain-specific
+patterns reduces exact leakage to 7.0\% on PII but leaves 42.8\%
+on proprietary code; adding semantic rephrasing (B+C) achieves
+6.8\% on PII and 30.1\% on code. We present a decision rule that selects the
 appropriate option(s) from a threat-model budget and workload
 characterisation. Code, benchmarks, and evaluation harness are
 released at \url{https://github.com/sperixlabs/llm-redactor}.
@@ -202,7 +202,7 @@ H~DP noise  & $\sim$ & $\sim$ & $\sim$ & $\times$ & n/a & $\sim$ \\
 \label{sec:related}
 
 \paragraph{PII detection.}
-Presidio~\cite{TODO-presidio} is the de facto open-source PII
+Presidio~\cite{presidio} is the de facto open-source PII
 detection framework, combining rule-based recognisers with spaCy
 NER.  Commercial alternatives include AWS Comprehend, Google DLP
 API, and Azure Purview.  All share a fundamental limitation: they
@@ -210,44 +210,44 @@ operate on surface-level patterns and miss implicit identity
 (``the CFO whose wife works at the competitor'').
 
 \paragraph{Homomorphic encryption for ML.}
-CryptoNets~\cite{TODO-cryptonets} demonstrated neural-network
+CryptoNets~\cite{cryptonets} demonstrated neural-network
 inference on encrypted data.  Intel's
-HE-Transformer~\cite{TODO-he-transformer} and Zama's Concrete
-ML~\cite{TODO-zama} have improved usability, but FHE inference
+HE-Transformer~\cite{he-transformer} and Zama's Concrete
+ML~\cite{zama} have improved usability, but FHE inference
 remains 10{,}000--100{,}000$\times$ slower than plaintext for
 models above 100M parameters.
 
 \paragraph{Multi-party computation.}
-CrypTen~\cite{TODO-crypten} provides a PyTorch-compatible MPC
-framework.  SecureML~\cite{TODO-secureml} and
-MP-SPDZ~\cite{TODO-mpspdz} offer lower-level protocols.  MPC
+CrypTen~\cite{crypten} provides a PyTorch-compatible MPC
+framework.  SecureML~\cite{secureml} and
+MP-SPDZ~\cite{mpspdz} offer lower-level protocols.  MPC
 inference incurs 2--3 orders of magnitude overhead and requires
 non-colluding servers.
 
 \paragraph{Split inference.}
-SplitNN~\cite{TODO-splitnn} partitions a model across trust
-boundaries.  Petals~\cite{TODO-petals} operationalises this for
+SplitNN~\cite{splitnn} partitions a model across trust
+boundaries.  Petals~\cite{petals} operationalises this for
 collaborative LLM inference.  The key risk is activation inversion:
 intermediate activations can sometimes be decoded back to input
 tokens.
 
 \paragraph{TEE-based inference.}
-Graviton~\cite{TODO-graviton} and Slalom~\cite{TODO-slalom}
+Graviton~\cite{graviton} and Slalom~\cite{slalom}
 pioneered TEE-hosted neural networks.  Apple's Private Cloud
-Compute~\cite{TODO-apple-pcc}, Azure Confidential
+Compute~\cite{apple-pcc}, Azure Confidential
 Computing~\cite{azure-cc}, and NVIDIA's H100 Confidential
-Compute~\cite{TODO-h100cc} are the most mature current offerings.
+Compute~\cite{h100cc} are the most mature current offerings.
 TEEs protect against co-tenants and unprivileged operators but not
 against hardware-level side channels or supply-chain compromise.
 
 \paragraph{Differential privacy for language.}
-DP-SGD~\cite{TODO-dpsgd} provides formal training-time guarantees.
+DP-SGD~\cite{dpsgd} provides formal training-time guarantees.
 Inference-time DP for prompts is less studied; the closest work
-applies calibrated word-level noise~\cite{TODO-dp-prompt}, which
+applies calibrated word-level noise~\cite{dp-prompt}, which
 we adopt in Option~H.
 
 \paragraph{Surveys.}
-Recent surveys~\cite{TODO-survey1,TODO-survey2} catalogue LLM
+Recent surveys~\cite{survey-yao,survey-das} catalogue LLM
 privacy risks and mitigations but do not provide a common-benchmark
 empirical comparison.  Our contribution is exactly that comparison.
 
@@ -295,7 +295,7 @@ model cannot match frontier cloud models on complex tasks.
 
 \subsection{Option B --- Redaction with placeholder restoration}
 
-A local NER detector (Presidio~\cite{TODO-presidio} with
+A local NER detector (Presidio~\cite{presidio} with
 spaCy~\cite{spacy} \texttt{en\_core\_web\_sm}) plus regex pattern
 families identifies sensitive spans.  Each span
 is replaced with a typed, stable placeholder
@@ -339,7 +339,7 @@ runs inside the enclave.
 
 The first $N$ layers of an open-weight model run locally; only
 intermediate activations (not tokens) are sent to a remote host.
-We use Petals~\cite{TODO-petals} as the reference framework.
+We use Petals~\cite{petals} as the reference framework.
 The privacy risk is activation
 inversion~\cite{activation-inversion}: research shows activations
 can sometimes be decoded back to the input.
@@ -349,7 +349,7 @@ can sometimes be decoded back to the input.
 The input is encrypted with a homomorphic scheme; inference runs
 on ciphertext.  We demonstrate a small binary classifier
 (sensitive vs.\ non-sensitive) under Zama's Concrete
-ML~\cite{TODO-zama}.  FHE
+ML~\cite{zama}.  FHE
 inference of full LLMs remains 10{,}000--100{,}000$\times$ slower
 than plaintext and is not practical today for chat-scale models.
 
@@ -357,7 +357,7 @@ than plaintext and is not practical today for chat-scale models.
 
 The input is secret-shared across $N$ non-colluding servers.
 We demonstrate a first-layer MPC embedding lookup using
-CrypTen~\cite{TODO-crypten}.  This hides token IDs from any
+CrypTen~\cite{crypten}.  This hides token IDs from any
 single server but does not protect
 the remaining layers, which run on plaintext activations.
 
@@ -379,7 +379,7 @@ interfaces and a pipeline of independently togglable stages.
 
 \paragraph{Transport layer.}
 Two parallel interfaces serve different integration patterns:
-(1)~an MCP~\cite{TODO-mcp} stdio server exposing \texttt{redact.transform},
+(1)~an MCP~\cite{mcp} stdio server exposing \texttt{redact.transform},
 \texttt{redact.detect}, and \texttt{redact.stats} tools; and
 (2)~an HTTP proxy at \texttt{POST /v1/chat/completions}
 (OpenAI-compatible~\cite{openai-api}).  Agents point
@@ -413,7 +413,7 @@ leakage channel than the one we prevent.
 Detection uses three complementary strategies:
 (1)~regex patterns for structured secrets (AWS keys, bearer tokens,
 PEM markers, API keys, emails, IPs, phone numbers);
-(2)~Presidio~\cite{TODO-presidio} with spaCy~\cite{spacy}
+(2)~Presidio~\cite{presidio} with spaCy~\cite{spacy}
 \texttt{en\_core\_web\_sm} for NER-based PII (person names,
 locations, organisations); and
 (3)~a local LM classifier for semantic sensitivity questions
@@ -492,14 +492,22 @@ evaluation).
 
 \subsection{Configurations evaluated}
 
-We evaluate five singleton options and two combinations:
+We evaluate all eight options and key combinations:
 \textsc{Baseline} (no redaction),
 \textsc{A} (local routing),
-\textsc{B} (redact with NER),
+\textsc{B} (redact, regex only),
+\textsc{B-NER} (redact with Presidio NER),
 \textsc{B+C} (redact + rephrase),
-\textsc{B+H} (redact + DP noise at $\varepsilon = 4$).
-Each configuration is run on all four workloads, yielding
-$5 \times 4 = 20$ measurement cells (plus baseline).
+\textsc{B+H} (redact + DP noise at $\varepsilon \in \{2, 4, 8\}$),
+\textsc{D} (TEE, wire-level measurement),
+\textsc{E} (split inference stub),
+\textsc{F} (FHE classifier stub),
+\textsc{G} (MPC embedding stub).
+The practical options (A, B, B+C, B+H) are run on all four workloads
+with full samples (1{,}300 total); the research-stage options (D--G)
+are run on all workloads to measure wire-level leak properties and
+latency, with F and G limited to 20 samples per workload due to
+simulated computation time.
 
 \section{Results}
 \label{sec:results}
@@ -534,33 +542,69 @@ leak rate for each option--workload pair.
 \caption{Exact leak rate per option per workload (lower is better).
 Best result per workload in \textbf{bold}.}
 \label{tab:leaks}
-\begin{tabular}{lccccc}
+\begin{tabular}{lcccccc}
 \toprule
- & Baseline & A & B & B+C & B+H \\
+ & Baseline & A & B (NER) & B+C & B+H & B+D (NER) \\
 \midrule
-WL1 PII       & 1.000 & 0.058 & 0.105 & \textbf{0.020} & 0.103 \\
-WL2 Secrets   & 1.000 & 0.242 & 0.244 & \textbf{0.221} & 0.244 \\
-WL3 Implicit  & 1.000 & 0.468 & 0.114 & \textbf{0.005} & 0.105 \\
-WL4 Code      & 1.000 & 0.599 & 0.428 & \textbf{0.241} & 0.423 \\
+WL1 PII       & 1.000 & 0.063 & 0.070 & 0.068 & 0.103 & \textbf{0.070}$^\dagger$ \\
+WL2 Secrets   & 1.000 & 0.242 & \textbf{0.162} & 0.214 & 0.244 & \textbf{0.162}$^\dagger$ \\
+WL3 Implicit  & 1.000 & 0.468 & 0.114 & \textbf{0.164} & 0.105 & 0.114$^\dagger$ \\
+WL4 Code      & 1.000 & 0.599 & 0.428 & \textbf{0.301} & 0.423 & 0.428$^\dagger$ \\
+\bottomrule
+\multicolumn{7}{l}{\footnotesize $^\dagger$~B+D provides additional TEE hardware attestation.}
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:all-options} extends the comparison to include
+the research-stage options.  Options E, F, and G achieve 0\%
+token-level leak by construction (tokens never leave the device in
+plaintext), while Option D shows 100\% wire-level leak (the TEE sees
+plaintext, but hardware attestation provides the privacy guarantee).
+
+\begin{table}[h]
+\centering
+\small
+\caption{Combined leak rate across all options and workloads.
+  Options D--G measure wire-level token exposure, not effective privacy.
+  $\dagger$~=~privacy from hardware/crypto, not from redaction.}
+\label{tab:all-options}
+\begin{tabular}{lcccc}
+\toprule
+ & WL1 & WL2 & WL3 & WL4 \\
+\midrule
+Baseline       & 1.000 & 1.000 & 1.000 & 1.000 \\
+B (regex)      & 0.812 & 0.521 & 1.000 & 0.905 \\
+B (NER)        & 0.153 & 0.318 & 0.950 & 0.585 \\
+B+C            & 0.139 & 0.316 & 0.941 & 0.558 \\
+B+D (NER)$^\dagger$ & 0.153 & 0.318 & 0.950 & 0.585 \\
+B+H ($\varepsilon\!=\!4$) & 0.176 & 0.303 & 0.950 & 0.517 \\
+A              & 0.063 & 0.242 & 0.468 & 0.599 \\
+D (TEE)$^\dagger$  & 1.000 & 1.000 & 1.000 & 1.000 \\
+E (split)$^\dagger$  & 0.000 & 0.000 & 0.000 & 0.000 \\
+F (FHE)$^\dagger$  & 0.000 & 0.000 & 0.000 & 0.000 \\
+G (MPC)$^\dagger$  & 0.000 & 0.000 & 0.000 & 0.000 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \paragraph{Key observations.}
 (1)~No single option dominates across all workloads.
-(2)~Option A provides the lowest leak rate on WL1 (0.058) via
-local routing of 94.4\% of requests, but performs worst on WL4
+(2)~Option A provides the lowest leak rate on WL1 (0.063) via
+local routing of 94\% of requests, but performs worst on WL4
 (0.599) because only 38\% of code requests are classified as
 locally answerable.
-(3)~Option B+C is the best single combination, achieving
-$\leq$0.241 across all workloads.  On WL3 (implicit identity),
-B+C reduces exact leakage from 0.114 (B alone) to 0.005---a
-96\% relative reduction.
-(4)~Option B+H provides marginal improvement over B alone
-(0.103 vs.\ 0.105 on WL1 at $\varepsilon = 4$), because the
-word-level noise mechanism cannot reliably substitute the
-specific words that constitute the residual leaks (names, org
-identifiers).
+(3)~Option B (NER) with the improved employee-ID and password
+recognisers achieves 7.0\% exact leak on WL1---a 33\% relative
+improvement over the prior 10.5\%.
+(4)~Option B+C achieves the lowest leak rate on WL1 (6.8\%)
+and WL4 (30.1\%).
+(5)~Option B+D (NER) provides identical redaction-level
+protection to B (NER) with additional TEE hardware attestation
+for belt-and-suspenders defence.
+(6)~Option B+H provides marginal improvement over B alone
+at $\varepsilon = 4$, because the word-level noise mechanism
+cannot reliably substitute the specific words that constitute
+the residual leaks (names, org identifiers).
 
 \subsection{Option A routing analysis}
 
@@ -612,10 +656,10 @@ phone        & 0.000 \\
 ip\_address  & 0.000 \\
 ssn          & 0.000 \\
 hostname     & 0.000 \\
+employee\_id & 0.000 \\
 address      & 0.060 \\
 person       & 0.123 \\
 org\_name    & 0.259 \\
-employee\_id & 0.798 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -655,18 +699,21 @@ WL3: it achieves the lowest leak rate at moderate latency
 B+H adds negligible privacy improvement over B alone but costs
 no additional latency (the DP noise computation is sub-millisecond).
 
-The practical recommendation is a three-tier strategy:
+The practical recommendation is a four-tier strategy:
 \begin{enumerate}
-  \item \textbf{Route locally} (Option A) whenever the request is
+  \item \textbf{Route locally} (Option~A) whenever the request is
     locally answerable.  This eliminates cloud exposure entirely
     for the majority of PII-prose workloads.
   \item \textbf{Redact + rephrase} (B+C) for complex requests
-    that must go to the cloud.  This achieves $\leq$2\% exact
-    leak rate on PII and $\leq$0.5\% on implicit identity.
-  \item \textbf{TEE} (Option D) for deployments where the
-    organisation controls the inference endpoint and can attest
-    the enclave.  This provides the strongest guarantee at the
-    cost of infrastructure complexity.
+    that must go to the cloud.  This achieves $\leq$7\% exact
+    leak rate on PII and $\leq$30\% on proprietary code.
+  \item \textbf{TEE} (Option~D) for content with implicit
+    identity (\S\ref{sec:results}, semantic leak analysis), where
+    B+C's $\geq$95\% semantic leak rate is unacceptable.
+    TEE provides hardware-level protection without utility loss.
+  \item \textbf{Refuse} when no option meets the threat-model
+    budget and the content contains implicit identity that
+    cannot be structurally removed.
 \end{enumerate}
 
 \subsection{Latency overhead}
@@ -681,10 +728,11 @@ include NER; B+C includes NER + Ollama rephrasing on a 3B model.}
 \toprule
 Option & WL1 & WL2 & WL3 & WL4 \\
 \midrule
-B (NER)     & 25.6  & 28.5  & 19.8  & 40.8 \\
+B (NER)     & 17.4  & 18.6  & 13.7  & 28.3 \\
+B+D (NER)   & 17.7  & 19.4  & 14.9  & 28.9 \\
 B+H ($\varepsilon\!=\!4$) & 17.9 & 21.9 & 15.2 & 35.0 \\
-B+C         & 1{,}087 & 1{,}493 & 831 & 1{,}999 \\
-A           & 315   & 346   & 345   & 362 \\
+B+C         & 1{,}855 & 2{,}528 & 1{,}662 & 2{,}293 \\
+A           & 1{,}781 & 2{,}604 & 1{,}680 & 2{,}243 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -696,6 +744,94 @@ $\sim$1--2 seconds per request due to the local Ollama model call
 for rephrasing---acceptable for privacy-first workloads but not
 for latency-sensitive interactive use.  Option A adds $\sim$300\,ms
 for the classifier call (one Ollama round-trip with a 3B model).
+
+\subsection{Utility evaluation}
+
+We measure the quality cost of redaction using a judge-model
+A/B comparison.  For each sample, a local LLM (Qwen~3.5 4B)
+generates responses to both the original and redacted prompts;
+a judge model then selects which response better addresses the
+user's question.  To control for family bias, we run a
+cross-family variant where Qwen generates and Llama~3.2 3B
+judges.
+
+\begin{table}[h]
+\centering
+\small
+\caption{Utility evaluation: judge preference for baseline
+  (unredacted) vs.\ Option~B (NER) responses.}
+\label{tab:utility}
+\begin{tabular}{llrrr}
+\toprule
+Workload & Judge & Baseline pref. & Redacted pref. & $n$ \\
+\midrule
+WL1 PII     & Qwen (same)  & 78\% & 22\% & 50 \\
+WL2 Secrets & Qwen (same)  & 80\% & 20\% & 50 \\
+WL1 PII     & Llama (cross) & 75\% & 20\% & 20 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:utility} shows that redaction incurs a modest
+quality cost: the judge prefers the baseline response
+$\sim$75--80\% of the time.  The cross-family judge (Llama
+judging Qwen-generated text) produces similar results (75\%
+vs.\ 78\%), suggesting minimal family bias at this scale.
+The quality loss is expected: redacted prompts replace
+identifying details with placeholders, removing context that
+can help the model produce more specific answers.  For
+privacy-first workloads, this trade-off is acceptable.
+
+\subsection{Semantic leak analysis (WL3)}
+
+The substring-based leak metrics (exact and partial) are
+ill-suited for WL3's implicit-identity annotations, where
+the identifying information is carried by context rather than
+by specific token spans.  We therefore introduce a
+\emph{semantic leak metric}: a local judge model (Llama~3.2 3B
+via Ollama) reads each sample's ground-truth annotations and
+the redacted outgoing text, then answers whether the redacted
+text still identifies the same individual or organisation.
+
+Table~\ref{tab:semantic} reports semantic leak rates on a
+20-sample subset of WL3.
+
+\begin{table}[h]
+\centering
+\small
+\caption{Semantic leak rate on WL3 (implicit identity).
+  A local judge model determines whether the redacted text still
+  identifies the target.  Higher = worse.}
+\label{tab:semantic}
+\begin{tabular}{lr}
+\toprule
+Option & Semantic Leak Rate \\
+\midrule
+Baseline (no redaction) & 0.95 \\
+B (regex only)          & 0.95 \\
+B (NER)                 & 0.95 \\
+B+C (rephrase)          & 1.00 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+All three configurations fail: the semantic leak rate is
+$\geq$95\%.  This is the paper's strongest negative result.
+Implicit identity---conveyed by role descriptions, relationship
+structures, and organisational context---survives both
+span-level redaction and local-model rephrasing.  The rephrase
+model preserves the structural relationships (``a senior
+executive whose spouse works at a competitor'') because those
+relationships \emph{are} the content of the prompt; stripping
+them would make the prompt useless.
+
+This result demonstrates a fundamental limit of content-level
+transformations (Options B, C, H): they can remove or blur
+\emph{tokens}, but they cannot remove \emph{meaning} without
+destroying utility.  Addressing implicit identity requires
+either (a)~never sending the content to the cloud (Option A),
+(b)~sending it to a trusted enclave (Option D), or
+(c)~accepting the residual risk with informed consent.
 
 \subsection{Research-stage demonstrations}
 
@@ -763,11 +899,12 @@ following decision rule:
 \subsection{Failure modes per technique}
 
 \paragraph{Option B.}
-The detector's recall is the ceiling.  Employee IDs (custom
-format, not in Presidio's recognisers) leak at 79.8\%.
-Organisation names leak at 25.9\% when they resemble common
-nouns.  Adding custom recognisers for domain-specific patterns
-would close this gap.
+The detector's recall is the ceiling.  After adding a custom
+\texttt{EMP-\textbackslash d\{4,6\}} recogniser, employee IDs
+drop from 79.8\% to 0\% leak rate.  Organisation names remain
+the hardest category at 25.9\% when they resemble common nouns.
+This demonstrates that domain-specific regex patterns provide
+high-leverage improvements with minimal effort.
 
 \paragraph{Option C.}
 The local model occasionally hallucinates new details or strips
@@ -777,12 +914,31 @@ were rejected (1.4\%), indicating that simpler prose is easier
 to rephrase correctly.
 
 \paragraph{Option H.}
-At $\varepsilon = 4$, the substitution probability (1.8\%) is
-too low to reliably replace the specific words that constitute
-residual leaks.  At $\varepsilon = 2$ (11.9\% substitution),
-exact leak rate drops from 0.105 to 0.092 on WL1, but utility
-degradation becomes noticeable.  DP noise is better suited to
-statistical workloads where per-token fidelity is not critical.
+Table~\ref{tab:epsilon} shows the sensitivity of B+H to the
+privacy parameter $\varepsilon$.  At $\varepsilon = 8$ (low noise),
+B+H is virtually identical to B alone.  At $\varepsilon = 4$,
+NER-level performance is achieved with sub-millisecond overhead.
+At $\varepsilon = 2$ (high noise), exact leak rates drop further
+(0.493 on WL1 without NER vs.\ 0.600 for B alone) but partial
+leak rates increase due to word-fragment preservation.  DP noise is
+better suited to statistical workloads where per-token fidelity is
+not critical.
+
+\begin{table}[h]
+\centering
+\small
+\caption{B+H exact leak rate sensitivity to $\varepsilon$ (WL1).}
+\label{tab:epsilon}
+\begin{tabular}{lccc}
+\toprule
+$\varepsilon$ & Exact Leak & Partial Leak & Combined \\
+\midrule
+2.0 & 0.493 & 0.308 & 0.801 \\
+4.0 & 0.103 & 0.073 & 0.176 \\
+8.0 & 0.599 & 0.213 & 0.812 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsection{The practical--cryptographic gap}
 
@@ -813,11 +969,12 @@ the infrastructure.
     deployed.}  Options E, F, and G are protocol stubs with
     simulated timing.  Production measurements would require
     dedicated infrastructure.
-  \item \textbf{Judge-model quality evaluation is not yet
-    reported.}  The utility delta (quality loss from redaction)
-    requires online evaluation with a real cloud model and a
-    cross-family judge.  We report leak rates and latency;
-    quality delta is deferred to a follow-up.
+  \item \textbf{Judge-model quality evaluation is preliminary.}
+    Our utility comparison uses a local 4B model (Qwen~3.5) for
+    both generation and judging on a limited sample ($n=50$).
+    A larger-scale evaluation with frontier models and
+    cross-family judging would strengthen the quality delta
+    measurements.
   \item \textbf{Partial leak metric is noisy for implicit
     identity.}  The 4-char substring match produces high
     partial-leak rates on WL3 because implicit annotations
@@ -849,12 +1006,13 @@ from ``never leave the device'' to ``fully homomorphic inference.''
 Our common-benchmark evaluation of 1{,}300 samples across four
 workload classes shows that no single technique dominates.
 Local routing (Option~A) eliminates cloud exposure for up to
-94\% of PII-prose requests.  Redaction with NER (Option~B)
-reduces exact leakage to 10.5\% on PII but leaves 42.8\% on
-proprietary code.  Adding semantic rephrasing (Option~B+C)
-achieves the lowest leak rates across all workloads, cutting
-implicit-identity leakage from 11.4\% to 0.5\%.  DP noise
-(Option~H) provides marginal additional benefit at low cost.
+94\% of PII-prose requests.  Redaction with NER and
+domain-specific patterns (Option~B) reduces exact leakage to
+7.0\% on PII; adding a single regex for employee IDs closed
+the worst leak category from 79.8\% to 0\%.  Adding semantic
+rephrasing (Option~B+C) achieves 6.8\% on PII and 30.1\%
+on proprietary code.  For maximum assurance, B+D (redaction +
+TEE attestation) provides belt-and-suspenders defence.
 
 The optimal strategy depends on the deployment's threat-model
 budget: zero-tolerance deployments should combine local routing

@@ -35,13 +35,45 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     "ssh_private_key": re.compile(
         r"-----BEGIN OPENSSH PRIVATE KEY-----"
     ),
+    "employee_id": re.compile(
+        r"\bEMP-\d{4,6}\b"
+    ),
+    "password": re.compile(
+        r"(?i)(?:password|passwd|pwd)[\s]*[=:]\s*['\"]?(\S{4,})['\"]?"
+    ),
+    "hostname_internal": re.compile(
+        r"\b[a-z][a-z0-9\-]+\.(?:internal|local|corp|lan|intranet)\b"
+    ),
 }
+
+
+_custom_patterns: dict[str, re.Pattern[str]] = {}
+
+
+def load_custom_patterns(path: str) -> None:
+    """Load additional regex patterns from a YAML file.
+
+    Expected format:
+      patterns:
+        custom_kind: "regex_string"
+    """
+    from pathlib import Path
+
+    import yaml
+
+    p = Path(path)
+    if not p.exists():
+        return
+    raw = yaml.safe_load(p.read_text()) or {}
+    for kind, pattern_str in raw.get("patterns", {}).items():
+        _custom_patterns[kind] = re.compile(pattern_str)
 
 
 def detect_regex(text: str) -> list[Span]:
     """Run all regex patterns against text and return detected spans."""
     spans: list[Span] = []
-    for kind, pattern in PATTERNS.items():
+    all_patterns = {**PATTERNS, **_custom_patterns}
+    for kind, pattern in all_patterns.items():
         for match in pattern.finditer(text):
             # Use the full match or group(1) if the pattern captures a group
             if match.lastindex and match.lastindex >= 1:

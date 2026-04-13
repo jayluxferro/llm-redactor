@@ -41,6 +41,31 @@ class OptionCConfig(OptionConfig):
 
 
 @dataclass
+class OptionDConfig(OptionConfig):
+    attestation_url: str = ""
+    inference_url: str = ""
+
+
+@dataclass
+class OptionEConfig(OptionConfig):
+    remote_url: str = ""
+    local_layers: int = 4
+    remote_layers: int = 24
+    hidden_dim: int = 4096
+
+
+@dataclass
+class OptionFConfig(OptionConfig):
+    sensitivity_threshold: float = 0.5
+
+
+@dataclass
+class OptionGConfig(OptionConfig):
+    num_parties: int = 3
+    embedding_dim: int = 768
+
+
+@dataclass
 class OptionHConfig(OptionConfig):
     epsilon: float = 4.0
 
@@ -50,10 +75,10 @@ class PipelineConfig:
     opt_a_local_only: OptionConfig = field(default_factory=OptionConfig)
     opt_b_redact: OptionBConfig = field(default_factory=OptionBConfig)
     opt_c_rephrase: OptionCConfig = field(default_factory=OptionCConfig)
-    opt_d_tee: OptionConfig = field(default_factory=OptionConfig)
-    opt_e_split: OptionConfig = field(default_factory=OptionConfig)
-    opt_f_fhe: OptionConfig = field(default_factory=OptionConfig)
-    opt_g_mpc: OptionConfig = field(default_factory=OptionConfig)
+    opt_d_tee: OptionDConfig = field(default_factory=OptionDConfig)
+    opt_e_split: OptionEConfig = field(default_factory=OptionEConfig)
+    opt_f_fhe: OptionFConfig = field(default_factory=OptionFConfig)
+    opt_g_mpc: OptionGConfig = field(default_factory=OptionGConfig)
     opt_h_dp_noise: OptionHConfig = field(default_factory=OptionHConfig)
 
 
@@ -83,12 +108,54 @@ class Config:
     policy: PolicyConfig = field(default_factory=PolicyConfig)
 
 
+def _merge_dataclass(dc_type: type, raw: dict[str, Any]) -> Any:
+    """Recursively merge a raw dict into a dataclass, respecting defaults."""
+    import dataclasses
+    import typing
+
+    # Resolve string annotations to real types.
+    hints = typing.get_type_hints(dc_type)
+    kwargs: dict[str, Any] = {}
+
+    for f in dataclasses.fields(dc_type):
+        if f.name not in raw:
+            continue
+        val = raw[f.name]
+        resolved_type = hints.get(f.name)
+        # If the resolved type is a dataclass, recurse.
+        if isinstance(resolved_type, type) and dataclasses.is_dataclass(resolved_type):
+            kwargs[f.name] = _merge_dataclass(resolved_type, val if isinstance(val, dict) else {})
+        else:
+            kwargs[f.name] = val
+
+    return dc_type(**kwargs)
+
+
+def _env_overrides(config: Config) -> Config:
+    """Apply environment variable overrides (env > file > defaults)."""
+    import os
+
+    if ep := os.environ.get("LLM_REDACTOR_HTTP_PORT"):
+        config.transport.http_port = int(ep)
+    if ep := os.environ.get("LLM_REDACTOR_LOCAL_ENDPOINT"):
+        config.local_model.endpoint = ep
+    if ep := os.environ.get("LLM_REDACTOR_CLOUD_ENDPOINT"):
+        config.cloud_target.endpoint = ep
+    if ep := os.environ.get("LLM_REDACTOR_CLOUD_API_KEY_ENV"):
+        config.cloud_target.api_key_env = ep
+    if ep := os.environ.get("LLM_REDACTOR_EPSILON"):
+        config.pipeline.opt_h_dp_noise.epsilon = float(ep)
+    return config
+
+
 def load_config(path: Path | None = None) -> Config:
-    """Load config from YAML file, falling back to defaults."""
+    """Load config from YAML file with env overrides.
+
+    Precedence: environment variables > YAML file > dataclass defaults.
+    """
     if path is None or not path.exists():
-        return Config()
+        return _env_overrides(Config())
 
     raw: dict[str, Any] = yaml.safe_load(path.read_text()) or {}
-    # TODO: merge raw dict into Config dataclass fields
-    _ = raw
-    return Config()
+    config = _merge_dataclass(Config, raw)
+    return _env_overrides(config)
