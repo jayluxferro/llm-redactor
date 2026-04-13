@@ -66,12 +66,10 @@ compatible with MCP and any OpenAI-compatible API. We evaluate the
 four practical options (A, B, C, H) and their combinations across
 four workload classes using a ground-truth-labelled leak benchmark
 of 1{,}300 samples with 4{,}014 annotations. Our headline finding
-is that \emph{no single technique dominates}: local routing (A)
-eliminates cloud exposure for 94\% of PII-prose requests but only
-38\% of code requests; redaction (B) with NER and domain-specific
-patterns reduces exact leakage to 7.0\% on PII but leaves 42.8\%
-on proprietary code; adding semantic rephrasing (B+C) achieves
-6.8\% on PII and 30.1\% on code. We present a decision rule that selects the
+is that \emph{no single technique dominates}: the combination A+B+C (route locally when possible, redact and
+rephrase the rest) achieves 0.6\% combined leak on PII and
+31.3\% on proprietary code, with zero exact leaks on PII
+across 500 samples. We present a decision rule that selects the
 appropriate option(s) from a threat-model budget and workload
 characterisation. Code, benchmarks, and evaluation harness are
 released at \url{https://github.com/jayluxferro/llm-redactor}.
@@ -574,16 +572,17 @@ leak rate for each option--workload pair.
 \caption{Exact leak rate per option per workload (lower is better).
 Best result per workload in \textbf{bold}.}
 \label{tab:leaks}
-\begin{tabular}{lcccccc}
+\begin{tabular}{lcccccccc}
 \toprule
- & Baseline & A & B (NER) & B+C & B+H & B+D (NER) \\
+ & Base & A & B & B+C & B+H & B+D$^\dagger$ & A+B & A+B+C \\
 \midrule
-WL1 PII       & 1.000 & 0.063 & 0.070 & 0.068 & 0.103 & \textbf{0.070}$^\dagger$ \\
-WL2 Secrets   & 1.000 & 0.242 & \textbf{0.162} & 0.214 & 0.244 & \textbf{0.162}$^\dagger$ \\
-WL3 Implicit  & 1.000 & 0.468 & 0.114 & \textbf{0.164} & 0.105 & 0.114$^\dagger$ \\
-WL4 Code      & 1.000 & 0.599 & 0.428 & \textbf{0.301} & 0.423 & 0.428$^\dagger$ \\
+WL1 PII      & 1.000 & .063 & .070 & .068 & .103 & .070 & .000 & \textbf{.000} \\
+WL2 Secrets  & 1.000 & .242 & .162 & .214 & .244 & .162 & \textbf{.042} & .036 \\
+WL3 Implicit & 1.000 & .468 & .114 & .164 & .105 & .114 & .064 & \textbf{.000} \\
+WL4 Code     & 1.000 & .599 & .428 & .301 & .423 & .428 & .285 & \textbf{.123} \\
 \bottomrule
-\multicolumn{7}{l}{\footnotesize $^\dagger$~B+D provides additional TEE hardware attestation.}
+\multicolumn{9}{l}{\footnotesize $^\dagger$~B+D provides additional TEE hardware attestation.
+All B variants use NER.}
 \end{tabular}
 \end{table}
 
@@ -611,6 +610,8 @@ B+C            & 0.139 & 0.316 & 0.941 & 0.558 \\
 B+D (NER)$^\dagger$ & 0.153 & 0.318 & 0.950 & 0.585 \\
 B+H ($\varepsilon\!=\!4$) & 0.176 & 0.303 & 0.950 & 0.517 \\
 A              & 0.063 & 0.242 & 0.468 & 0.599 \\
+\textbf{A+B}   & \textbf{0.012} & \textbf{0.063} & 0.445 & 0.381 \\
+\textbf{A+B+C} & \textbf{0.006} & 0.064 & \textbf{0.436} & \textbf{0.313} \\
 D (TEE)$^\dagger$  & 1.000 & 1.000 & 1.000 & 1.000 \\
 E (split)$^\dagger$  & 0.000 & 0.000 & 0.000 & 0.000 \\
 F (FHE)$^\dagger$  & 0.000 & 0.000 & 0.000 & 0.000 \\
@@ -621,22 +622,24 @@ G (MPC)$^\dagger$  & 0.000 & 0.000 & 0.000 & 0.000 \\
 
 \paragraph{Key observations.}
 (1)~No single option dominates across all workloads.
-(2)~Option A provides the lowest leak rate on WL1 (0.063) via
-local routing of 94\% of requests, but performs worst on WL4
-(0.599) because only 38\% of code requests are classified as
-locally answerable.
-(3)~Option B (NER) with the improved employee-ID and password
-recognisers achieves 7.0\% exact leak on WL1---a 33\% relative
-improvement over the prior 10.5\%.
-(4)~Option B+C achieves the lowest leak rate on WL1 (6.8\%)
-and WL4 (30.1\%).
-(5)~Option B+D (NER) provides identical redaction-level
-protection to B (NER) with additional TEE hardware attestation
-for belt-and-suspenders defence.
-(6)~Option B+H provides marginal improvement over B alone
+(2)~\textbf{A+B+C is the strongest practical combination},
+achieving 0.6\% combined leak on WL1 (PII), 6.4\% on WL2
+(secrets), and 31.3\% on WL4 (code).  On WL1, A+B+C achieves
+\emph{zero} exact leaks across all 500 samples.
+(3)~Option A alone provides 6.3\% leak on WL1 via local
+routing of 94\% of requests, but 59.9\% on WL4 where only
+38\% of requests are locally answerable.
+(4)~A+B (without rephrase) achieves 1.2\% on WL1 and 38.1\%
+on WL4---already a major improvement over B alone (15.3\%,
+58.5\%) because locally-routed requests contribute zero leaks.
+(5)~Option B+H provides marginal improvement over B alone
 at $\varepsilon = 4$, because the word-level noise mechanism
 cannot reliably substitute the specific words that constitute
-the residual leaks (names, org identifiers).
+the residual leaks.
+(6)~WL3 (implicit identity) remains the hardest workload:
+even A+B+C achieves only 43.6\% combined leak, because
+implicit identity survives both redaction and rephrasing
+(\S\ref{sec:results}, semantic leak analysis).
 
 \subsection{Option A routing analysis}
 
@@ -1070,14 +1073,15 @@ Practical privacy tooling for LLM requests spans eight options
 from ``never leave the device'' to ``fully homomorphic inference.''
 Our common-benchmark evaluation of 1{,}300 samples across four
 workload classes shows that no single technique dominates.
-Local routing (Option~A) eliminates cloud exposure for up to
-94\% of PII-prose requests.  Redaction with NER and
-domain-specific patterns (Option~B) reduces exact leakage to
-7.0\% on PII; adding a single regex for employee IDs closed
-the worst leak category from 79.8\% to 0\%.  Adding semantic
-rephrasing (Option~B+C) achieves 6.8\% on PII and 30.1\%
-on proprietary code.  For maximum assurance, B+D (redaction +
-TEE attestation) provides belt-and-suspenders defence.
+The combination A+B+C (route locally when possible, redact
+and rephrase the rest) is the strongest practical configuration,
+achieving 0.6\% combined leak on PII with zero exact leaks
+across 500 samples.  Implicit identity (WL3) remains the
+hardest category at 43.6\%, demonstrating a fundamental limit
+of content-level transformations.  For deployments where
+implicit identity is a concern, TEE-hosted inference
+(Option~D) provides hardware-level protection without utility
+loss.
 
 The optimal strategy depends on the deployment's threat-model
 budget: zero-tolerance deployments should combine local routing
