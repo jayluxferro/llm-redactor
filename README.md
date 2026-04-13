@@ -41,42 +41,48 @@ See [`docs/OPTIONS.md`](docs/OPTIONS.md) for the deep dive.
 | B (NER) | 15.3% | 31.8% | 95.0% | 58.5% |
 | B+C | 13.9% | 31.6% | 94.1% | 55.8% |
 | A | 6.3% | 24.2% | 46.8% | 59.9% |
+| A+B+C | 0.6% | 6.4% | 43.6% | 31.3% |
 | E/F/G | 0% | 0% | 0% | 0% |
 
 *Combined leak rate (exact + partial). Lower is better. E/F/G are
 protocol stubs — 0% reflects that tokens never leave the device.*
 
-## Quick start
+---
+
+## Installation
 
 ```bash
-# Install
 uv sync
-
-# Run the HTTP proxy (OpenAI-compatible)
-uv run llm-redactor serve --port 7789
-
-# Dry-run detection
-uv run llm-redactor detect "Contact alice@example.com for API key sk-abc123" --redact
-
-# Run the MCP stdio server
-uv run llm-redactor mcp
-
-# Run the evaluation harness
-uv run python -m evals.run_eval --option B --use-ner
 ```
 
-## Using with a coding agent
+## Usage
 
-### Transparent HTTP proxy (recommended)
+There are four ways to use llm-redactor depending on your setup.
+
+### 1. CLI (try it out)
+
+```bash
+# Detect sensitive spans
+uv run llm-redactor detect "Contact alice@example.com, key AKIA1234567890ABCDEF"
+
+# Detect with NER (slower, catches person/org names)
+uv run llm-redactor detect "Email from John Smith at Acme Corp" --ner
+
+# Detect and show redacted output
+uv run llm-redactor detect "Contact alice@example.com about project Falcon" --redact
+```
+
+### 2. HTTP proxy (transparent, works with any agent)
 
 The agent doesn't know redaction is happening — you just swap the API URL.
 
+**Start the proxy:**
+
 ```bash
-# Terminal 1: start the redactor proxy
 uv run llm-redactor serve --port 7789
 ```
 
-Then point your agent at it:
+**Point your agent at it:**
 
 ```bash
 # Claude Code
@@ -88,16 +94,37 @@ aider --openai-api-base http://localhost:7789/v1
 
 # Cursor / Continue / any OpenAI-compatible agent
 # Set api_base: http://localhost:7789/v1 in the agent's config
+
+# Direct curl
+curl http://localhost:7789/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Email alice@example.com about project Falcon"}]}'
 ```
 
 The proxy intercepts every request, redacts PII/secrets, forwards to
 the real cloud endpoint, restores placeholders in the response, and
-returns a normal answer. The agent never sees placeholders.
+returns a normal answer. Supports streaming (`stream: true`) and the
+Anthropic Messages API (`/v1/messages`).
 
-### MCP server (explicit tools)
+**Configure the cloud target** in `llm_redactor.yaml`:
 
-For MCP-capable agents (Claude Code, Claude Desktop), add to your
-MCP config:
+```yaml
+cloud_target:
+  endpoint: https://api.openai.com/v1   # where to forward after redaction
+  api_key_env: OPENAI_API_KEY            # env var holding the API key
+pipeline:
+  opt_b_redact: { enabled: true, strict: false }
+```
+
+Or use environment variables:
+
+```bash
+export LLM_REDACTOR_CLOUD_ENDPOINT=https://api.openai.com/v1
+```
+
+### 3. MCP server (for Claude Code, Claude Desktop, etc.)
+
+Add to your MCP config (`~/.claude/settings.json` for Claude Code):
 
 ```json
 {
@@ -110,17 +137,36 @@ MCP config:
 }
 ```
 
-This exposes four tools:
+This gives the agent five tools:
 
-- **`redact.scrub`** — detect and redact sensitive content; returns redacted text + `session_id`
-- **`redact.restore`** — given a response + `session_id`, restore placeholders to originals
-- **`redact.detect`** — dry-run: show what would be redacted without changing anything
-- **`redact.stats`** — request/detection/restore counters
+| Tool | What it does | Cloud config needed? |
+|------|-------------|---------------------|
+| `llm.chat` | One-shot: scrub → call LLM → restore. Drop-in replacement for LLM calls. | Yes |
+| `redact.scrub` | Redact text, return redacted version + `session_id` | No |
+| `redact.restore` | Restore placeholders using `session_id` from scrub | No |
+| `redact.detect` | Dry-run: show what would be detected | No |
+| `redact.stats` | Request/detection/restore counters | No |
 
-The redactor never contacts the cloud — it just scrubs content.
-The agent handles its own LLM calls.
+#### Option A: Use `llm.chat` (easiest)
 
-#### MCP workflow
+The agent calls one tool that handles everything:
+
+```json
+{
+  "messages": [
+    {"role": "user", "content": "Help debug this for alice@example.com, API key sk-abc123"}
+  ],
+  "model": "gpt-4o"
+}
+```
+
+Returns the LLM response with all sensitive content redacted in
+transit and restored in the result. The agent never sees placeholders.
+Requires `cloud_target` config (see above).
+
+#### Option B: Use `scrub` / `restore` (no cloud config)
+
+The agent handles its own LLM calls. The redactor just scrubs content.
 
 ```
 Agent                          llm-redactor                Cloud LLM
@@ -135,19 +181,15 @@ Agent                          llm-redactor                Cloud LLM
   │<── restored response ─────────────────────│                │
 ```
 
-#### Example: scrub before sending
-
-Call `redact.scrub` with sensitive text:
+**Step 1: Scrub before sending**
 
 ```json
-{
-  "text": "Contact alice@example.com about project Falcon. API key: sk-abc123def456"
-}
+// Call redact.scrub
+{ "text": "Contact alice@example.com about project Falcon. API key: sk-abc123def456" }
 ```
 
-Returns:
-
 ```json
+// Returns
 {
   "redacted_text": "Contact ⟨EMAIL_1⟩ about project Falcon. API key: ⟨API_KEY_1⟩",
   "session_id": "a1b2c3d4-...",
@@ -156,47 +198,30 @@ Returns:
 }
 ```
 
-Send `redacted_text` to your LLM. When you get the response back,
-call `redact.restore`:
+**Step 2: Send `redacted_text` to your LLM (however you normally do it)**
+
+**Step 3: Restore the response**
 
 ```json
+// Call redact.restore
 {
   "text": "I've drafted an email to ⟨EMAIL_1⟩ regarding project Falcon.",
   "session_id": "a1b2c3d4-..."
 }
 ```
 
-Returns:
-
 ```json
+// Returns
 {
   "restored_text": "I've drafted an email to alice@example.com regarding project Falcon.",
   "placeholders_restored": 2
 }
 ```
 
-#### One-shot: `llm.chat` (easiest for MCP)
-
-If you want the agent to use a single tool that handles everything
-(scrub → LLM call → restore), use `llm.chat`:
-
-```json
-{
-  "messages": [
-    {"role": "user", "content": "Help debug this for alice@example.com, API key sk-abc123"}
-  ],
-  "model": "gpt-4o"
-}
-```
-
-Returns the LLM response with all sensitive content redacted in
-transit and restored in the result. The agent never sees placeholders.
-Requires `cloud_target` in `llm_redactor.yaml` or env vars.
-
-### Claude Code hook (automatic warnings)
+### 4. Claude Code hook (automatic warnings)
 
 Install a pre-tool hook that warns when sensitive content is about
-to leave through any tool:
+to leave through any tool. Add to `~/.claude/settings.json`:
 
 ```json
 {
@@ -216,29 +241,28 @@ to leave through any tool:
 }
 ```
 
-The hook scans tool inputs for emails, API keys, bearer tokens, PEM
-keys, and SSN patterns. If found, it blocks the tool call with a
-warning suggesting `redact.scrub` or `llm.chat` instead.
+The hook scans every tool input for emails, API keys, bearer tokens,
+PEM keys, and SSN patterns. If found, it blocks the tool call with a
+warning. This works as a safety net alongside any of the other modes.
 
-### Dual mode: proxy + MCP (belt and suspenders)
+### Combining modes (belt and suspenders)
 
-Run both for maximum coverage:
+For maximum coverage, run the proxy AND load the MCP tools:
 
 ```bash
 # Terminal 1: proxy catches all OpenAI-compatible traffic
 uv run llm-redactor serve --port 7789
 
-# Agent config: point at proxy AND load MCP tools
+# Terminal 2: agent with both proxy and MCP
 export OPENAI_API_BASE=http://localhost:7789/v1
+claude  # with llm-redactor MCP server also configured
 ```
 
-With MCP config also loaded, the agent has:
 - **Proxy**: silently redacts everything going to the cloud
-- **`redact.detect`**: inspect what the proxy would catch
-- **`redact.scrub`/`restore`**: manual control when needed
-- **Hook**: warns if sensitive data slips through other tools
+- **MCP tools**: available for the agent to inspect detections or manually scrub
+- **Hook**: warns if sensitive data slips through other tool calls
 
-### Comparison
+### Mode comparison
 
 | | HTTP Proxy | `llm.chat` | `scrub`/`restore` | Hook |
 |---|---|---|---|---|
@@ -246,6 +270,26 @@ With MCP config also loaded, the agent has:
 | Coverage | All requests | When agent uses it | When agent uses it | All tool calls |
 | Cloud config needed | Yes | Yes | No | No |
 | Works with | Any client | MCP agents | MCP agents | Claude Code |
+
+---
+
+## Configuration
+
+```yaml
+# llm_redactor.yaml
+pipeline:
+  opt_b_redact: { enabled: true, strict: true }
+  opt_c_rephrase: { enabled: false }
+  opt_h_dp_noise: { enabled: false, epsilon: 4.0 }
+cloud_target:
+  endpoint: https://api.openai.com/v1
+  api_key_env: OPENAI_API_KEY
+local_model:
+  endpoint: http://127.0.0.1:11434
+  chat_model: llama3.2:3b
+```
+
+Precedence: environment variables > YAML file > defaults.
 
 ## Project structure
 
@@ -267,6 +311,9 @@ evals/
   utility_meter.py # Judge-model A/B utility comparison
   run_eval.py      # CLI entry point
 
+hooks/
+  detect-sensitive.sh  # Claude Code PreToolUse hook
+
 paper/
   paper.tex        # LaTeX source
   bibliography.bib # References
@@ -277,33 +324,32 @@ docs/              # Architecture, options, threat model, API, evaluation design
 
 ## Documentation
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — System design
-- [`docs/OPTIONS.md`](docs/OPTIONS.md) — All eight options in detail
-- [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) — Actors, assets, attack scenarios
-- [`docs/API.md`](docs/API.md) — MCP + HTTP interfaces
-- [`docs/EVALUATION.md`](docs/EVALUATION.md) — Metrics and workload design
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) -- System design
+- [`docs/OPTIONS.md`](docs/OPTIONS.md) -- All eight options in detail
+- [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) -- Actors, assets, attack scenarios
+- [`docs/API.md`](docs/API.md) -- MCP + HTTP interfaces
+- [`docs/EVALUATION.md`](docs/EVALUATION.md) -- Metrics and workload design
 
-## Configuration
+## Running the evaluation
 
-```yaml
-pipeline:
-  opt_b_redact: { enabled: true, strict: true }
-  opt_c_rephrase: { enabled: false }
-  opt_h_dp_noise: { enabled: false, epsilon: 4.0 }
-cloud_target:
-  endpoint: https://api.openai.com/v1
-  api_key_env: OPENAI_API_KEY
-local_model:
-  endpoint: http://127.0.0.1:11434
-  chat_model: llama3.2:3b
+```bash
+# Option B with NER on all workloads
+uv run python -m evals.run_eval --option B --use-ner
+
+# Specific option and workload
+uv run python -m evals.run_eval --option A+B+C --use-ner -w wl1_pii
+
+# Build the paper
+make paper
+
+# Build arXiv submission zip
+make arxiv
 ```
-
-Precedence: environment variables > YAML file > defaults.
 
 ## Tests
 
 ```bash
-uv run pytest -v   # 38 tests
+uv run pytest -v   # 46 tests
 ```
 
 ## License
