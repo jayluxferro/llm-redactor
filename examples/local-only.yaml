@@ -1,0 +1,38 @@
+# Local-only configuration (MCP mode)
+#
+# Best for: maximum privacy, no cloud dependency
+# Eval result: 0% leak on all workloads (nothing leaves the device)
+# Trade-off: bounded by local model quality (3B model)
+#
+# Usage:
+#   cp examples/local-only.yaml llm_redactor.yaml
+#   uv run llm-redactor mcp
+#
+# The agent uses redact.scrub / redact.restore MCP tools.
+# No cloud_target needed — the agent handles its own LLM calls
+# and the redactor just scrubs content.
+
+local_model:
+  backend: ollama
+  endpoint: http://127.0.0.1:11434
+  chat_model: llama3.2:3b
+
+pipeline:
+  # Option A: route trivial requests to local model
+  opt_a_local_only: { enabled: true }
+
+  # Option B: redact PII/secrets with NER + regex
+  # Eval: 15.3% combined leak on PII, 31.8% on secrets
+  opt_b_redact: { enabled: true, strict: false }
+
+  # Option C: rephrase to strip implicit identity
+  # Eval: B+C reduces PII leak to 13.9%
+  opt_c_rephrase: { enabled: false, require_validator_pass: true }
+
+  # Option H: DP noise as last-line defence
+  # Eval: marginal improvement over B alone at epsilon=4
+  opt_h_dp_noise: { enabled: false, epsilon: 4.0 }
+
+policy:
+  strict_refuse_on_unknown_sensitive: false
+  categories: [pii, secret, org_identifier]

@@ -1,0 +1,36 @@
+# Strict mode: refuse on low-confidence detections
+#
+# Best for: regulated environments where false negatives are unacceptable
+# Behaviour: if the detector finds a span with confidence < 0.5,
+#            the request is refused with HTTP 422 (proxy) or error (MCP)
+#            rather than silently passing it through.
+#
+# Trade-off: higher refusal rate, but no silent leaks
+#
+# Usage:
+#   cp examples/strict.yaml llm_redactor.yaml
+#   export OPENAI_API_KEY=sk-...
+#   uv run llm-redactor serve --port 7789
+
+cloud_target:
+  backend: openai_compat
+  endpoint: https://api.openai.com/v1
+  api_key_env: OPENAI_API_KEY
+
+local_model:
+  backend: ollama
+  endpoint: http://127.0.0.1:11434
+  chat_model: llama3.2:3b
+
+transport:
+  http: true
+  http_port: 7789
+
+pipeline:
+  opt_b_redact:
+    enabled: true
+    strict: true  # refuse on low-confidence detections
+
+policy:
+  strict_refuse_on_unknown_sensitive: true
+  categories: [pii, secret, org_identifier, customer_name]

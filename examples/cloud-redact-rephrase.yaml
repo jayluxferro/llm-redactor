@@ -1,0 +1,41 @@
+# Cloud with redaction + rephrasing (proxy mode)
+#
+# Best for: strong privacy with cloud LLMs, including implicit identity
+# Eval result: 13.9% combined leak on PII, 55.8% on code
+# Trade-off: ~2s latency (local model rephrase), quality varies
+#
+# Requires Ollama running locally for the rephrase step.
+#
+# Usage:
+#   cp examples/cloud-redact-rephrase.yaml llm_redactor.yaml
+#   export OPENAI_API_KEY=sk-...
+#   ollama serve  # if not already running
+#   uv run llm-redactor serve --port 7789
+
+cloud_target:
+  backend: openai_compat
+  endpoint: https://api.openai.com/v1
+  api_key_env: OPENAI_API_KEY
+
+local_model:
+  backend: ollama
+  endpoint: http://127.0.0.1:11434
+  chat_model: llama3.2:3b
+
+transport:
+  http: true
+  http_port: 7789
+
+pipeline:
+  # Option B: NER + regex redaction
+  opt_b_redact: { enabled: true, strict: false }
+
+  # Option C: semantic rephrase via local model
+  # Strips implicit identity that B can't catch
+  # Validator ensures technical terms survive (70% threshold)
+  # Falls back to B-only if rephrase quality is too low
+  opt_c_rephrase: { enabled: true, require_validator_pass: true }
+
+policy:
+  strict_refuse_on_unknown_sensitive: false
+  categories: [pii, secret, org_identifier, customer_name]

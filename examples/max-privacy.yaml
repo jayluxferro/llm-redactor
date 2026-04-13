@@ -1,0 +1,44 @@
+# Maximum privacy: local routing + redaction + rephrase (A+B+C)
+#
+# Best for: highest privacy with cloud fallback for complex tasks
+# Eval result: 0.6% combined leak on PII (zero exact leaks across
+#              500 samples), 6.4% on secrets, 31.3% on code
+# Trade-off: ~2s latency, requires Ollama for classification + rephrase
+#
+# This is the paper's recommended configuration. Trivial requests
+# are answered locally (nothing leaves device). Complex requests
+# are redacted + rephrased before going to cloud.
+#
+# Usage:
+#   cp examples/max-privacy.yaml llm_redactor.yaml
+#   export OPENAI_API_KEY=sk-...
+#   ollama serve
+#   uv run llm-redactor serve --port 7789
+
+cloud_target:
+  backend: openai_compat
+  endpoint: https://api.openai.com/v1
+  api_key_env: OPENAI_API_KEY
+
+local_model:
+  backend: ollama
+  endpoint: http://127.0.0.1:11434
+  chat_model: llama3.2:3b
+
+transport:
+  http: true
+  http_port: 7789
+
+pipeline:
+  # Option A: route trivial requests locally (94% of PII workload)
+  opt_a_local_only: { enabled: true }
+
+  # Option B: NER + regex redaction on cloud-bound requests
+  opt_b_redact: { enabled: true, strict: false }
+
+  # Option C: semantic rephrase for implicit identity
+  opt_c_rephrase: { enabled: true, require_validator_pass: true }
+
+policy:
+  strict_refuse_on_unknown_sensitive: true
+  categories: [pii, secret, org_identifier, customer_name]

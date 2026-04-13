@@ -275,18 +275,30 @@ claude  # with llm-redactor MCP server also configured
 
 ## Configuration
 
-```yaml
-# llm_redactor.yaml
-pipeline:
-  opt_b_redact: { enabled: true, strict: true }
-  opt_c_rephrase: { enabled: false }
-  opt_h_dp_noise: { enabled: false, epsilon: 4.0 }
-cloud_target:
-  endpoint: https://api.openai.com/v1
-  api_key_env: OPENAI_API_KEY
-local_model:
-  endpoint: http://127.0.0.1:11434
-  chat_model: llama3.2:3b
+Copy one of the example configs as your starting point:
+
+| Config | Mode | What it does | Eval leak rate (PII) |
+|--------|------|-------------|---------------------|
+| [`local-only.yaml`](examples/local-only.yaml) | MCP | Local model only, nothing leaves device | 0% |
+| [`cloud-redact.yaml`](examples/cloud-redact.yaml) | Proxy | Redact PII/secrets, forward to OpenAI | 15.3% |
+| [`cloud-redact-rephrase.yaml`](examples/cloud-redact-rephrase.yaml) | Proxy | Redact + rephrase implicit identity | 13.9% |
+| [`max-privacy.yaml`](examples/max-privacy.yaml) | Proxy | A+B+C: local routing + redact + rephrase | **0.6%** |
+| [`anthropic.yaml`](examples/anthropic.yaml) | Proxy | Redact for Anthropic Claude API | 15.3% |
+| [`mcp-with-cloud.yaml`](examples/mcp-with-cloud.yaml) | MCP | `llm.chat` tool with cloud backend | 15.3% |
+| [`strict.yaml`](examples/strict.yaml) | Proxy | Refuse on low-confidence detections | varies |
+
+```bash
+# Pick a config
+cp examples/max-privacy.yaml llm_redactor.yaml
+
+# Set your API key
+export OPENAI_API_KEY=sk-...
+
+# Start (proxy mode)
+uv run llm-redactor serve --port 7789
+
+# Or start (MCP mode)
+uv run llm-redactor mcp
 ```
 
 Precedence: environment variables > YAML file > defaults.

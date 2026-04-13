@@ -1,0 +1,44 @@
+# MCP mode with cloud LLM (for llm.chat tool)
+#
+# Best for: MCP agents that want one-shot privacy-preserving LLM calls
+# The agent calls llm.chat instead of the LLM directly.
+# Redactor handles scrub → cloud call → restore internally.
+#
+# Usage:
+#   cp examples/mcp-with-cloud.yaml llm_redactor.yaml
+#   export OPENAI_API_KEY=sk-...
+#
+# MCP config (~/.claude/settings.json):
+#   {
+#     "mcpServers": {
+#       "llm-redactor": {
+#         "command": "uv",
+#         "args": ["--directory", "/path/to/llm-redactor", "run", "llm-redactor", "mcp"],
+#         "env": { "OPENAI_API_KEY": "sk-..." }
+#       }
+#     }
+#   }
+#
+# The agent calls llm.chat with messages and gets a clean response.
+# redact.scrub / redact.restore are also available for manual control.
+
+cloud_target:
+  backend: openai_compat
+  endpoint: https://api.openai.com/v1
+  api_key_env: OPENAI_API_KEY
+
+local_model:
+  backend: ollama
+  endpoint: http://127.0.0.1:11434
+  chat_model: llama3.2:3b
+
+transport:
+  mcp: true
+  http: false
+
+pipeline:
+  opt_b_redact: { enabled: true, strict: false }
+
+policy:
+  strict_refuse_on_unknown_sensitive: false
+  categories: [pii, secret, org_identifier]

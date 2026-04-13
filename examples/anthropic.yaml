@@ -1,0 +1,32 @@
+# Anthropic Claude API configuration (proxy mode)
+#
+# Best for: using Claude models with privacy protection
+# Uses the /v1/messages endpoint (Anthropic native format)
+#
+# Usage:
+#   cp examples/anthropic.yaml llm_redactor.yaml
+#   export ANTHROPIC_API_KEY=sk-ant-...
+#   uv run llm-redactor serve --port 7789
+#
+# Then point your client at http://localhost:7789/v1/messages
+
+cloud_target:
+  backend: openai_compat  # also used for Anthropic via /v1/messages
+  endpoint: https://api.anthropic.com/v1
+  api_key_env: ANTHROPIC_API_KEY
+
+local_model:
+  backend: ollama
+  endpoint: http://127.0.0.1:11434
+  chat_model: llama3.2:3b
+
+transport:
+  http: true
+  http_port: 7789
+
+pipeline:
+  opt_b_redact: { enabled: true, strict: false }
+
+policy:
+  strict_refuse_on_unknown_sensitive: false
+  categories: [pii, secret, org_identifier]
