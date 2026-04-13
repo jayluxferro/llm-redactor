@@ -131,7 +131,11 @@ Add to your MCP config (`~/.claude/settings.json` for Claude Code):
   "mcpServers": {
     "llm-redactor": {
       "command": "uv",
-      "args": ["--directory", "/path/to/llm-redactor", "run", "llm-redactor", "mcp"]
+      "args": [
+        "--directory", "/path/to/llm-redactor",
+        "run", "llm-redactor", "mcp",
+        "--config", "/path/to/llm-redactor/examples/local-only.yaml"
+      ]
     }
   }
 }
@@ -162,7 +166,9 @@ The agent calls one tool that handles everything:
 
 Returns the LLM response with all sensitive content redacted in
 transit and restored in the result. The agent never sees placeholders.
-Requires `cloud_target` config (see above).
+Requires a config with `cloud_target` — use
+[`examples/mcp-with-cloud.yaml`](examples/mcp-with-cloud.yaml)
+and pass via `--config` in the MCP args.
 
 #### Option B: Use `scrub` / `restore` (no cloud config)
 

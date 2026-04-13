@@ -4,9 +4,23 @@
 # Eval result: 0% leak on all workloads (nothing leaves the device)
 # Trade-off: bounded by local model quality (3B model)
 #
-# Usage:
+# Usage (standalone):
 #   cp examples/local-only.yaml llm_redactor.yaml
 #   uv run llm-redactor mcp
+#
+# Usage (MCP config in ~/.claude/settings.json):
+#   {
+#     "mcpServers": {
+#       "llm-redactor": {
+#         "command": "uv",
+#         "args": [
+#           "--directory", "/path/to/llm-redactor",
+#           "run", "llm-redactor", "mcp",
+#           "--config", "/path/to/llm-redactor/examples/local-only.yaml"
+#         ]
+#       }
+#     }
+#   }
 #
 # The agent uses redact.scrub / redact.restore MCP tools.
 # No cloud_target needed — the agent handles its own LLM calls

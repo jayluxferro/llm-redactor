@@ -13,7 +13,11 @@
 #     "mcpServers": {
 #       "llm-redactor": {
 #         "command": "uv",
-#         "args": ["--directory", "/path/to/llm-redactor", "run", "llm-redactor", "mcp"],
+#         "args": [
+#           "--directory", "/path/to/llm-redactor",
+#           "run", "llm-redactor", "mcp",
+#           "--config", "/path/to/llm-redactor/examples/mcp-with-cloud.yaml"
+#         ],
 #         "env": { "OPENAI_API_KEY": "sk-..." }
 #       }
 #     }
