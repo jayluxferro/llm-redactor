@@ -117,9 +117,63 @@ This exposes four tools:
 - **`redact.detect`** — dry-run: show what would be redacted without changing anything
 - **`redact.stats`** — request/detection/restore counters
 
-The workflow: the agent calls `redact.scrub` before sending to the LLM,
-sends the redacted text itself, then calls `redact.restore` on the
-response. The redactor never contacts the cloud — it just scrubs content.
+The redactor never contacts the cloud — it just scrubs content.
+The agent handles its own LLM calls.
+
+#### MCP workflow
+
+```
+Agent                          llm-redactor                Cloud LLM
+  │                                │                           │
+  │── redact.scrub(text) ─────────>│                           │
+  │<── redacted_text + session_id ─│                           │
+  │                                                            │
+  │── send redacted_text ─────────────────────────────────────>│
+  │<── response with placeholders ─────────────────────────────│
+  │                                                            │
+  │── redact.restore(response, session_id) ──>│                │
+  │<── restored response ─────────────────────│                │
+```
+
+#### Example: scrub before sending
+
+Call `redact.scrub` with sensitive text:
+
+```json
+{
+  "text": "Contact alice@example.com about project Falcon. API key: sk-abc123def456"
+}
+```
+
+Returns:
+
+```json
+{
+  "redacted_text": "Contact ⟨EMAIL_1⟩ about project Falcon. API key: ⟨API_KEY_1⟩",
+  "session_id": "a1b2c3d4-...",
+  "detections": 2,
+  "detected_kinds": ["email", "generic_api_key"]
+}
+```
+
+Send `redacted_text` to your LLM. When you get the response back,
+call `redact.restore`:
+
+```json
+{
+  "text": "I've drafted an email to ⟨EMAIL_1⟩ regarding project Falcon.",
+  "session_id": "a1b2c3d4-..."
+}
+```
+
+Returns:
+
+```json
+{
+  "restored_text": "I've drafted an email to alice@example.com regarding project Falcon.",
+  "placeholders_restored": 2
+}
+```
 
 ### Proxy vs MCP
 
