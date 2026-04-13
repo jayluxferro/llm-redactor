@@ -42,12 +42,11 @@ def fig_leak_rates(rows: list[dict]) -> None:
     # Select the key options for the main figure.
     key_options = {
         "baseline": "Baseline",
-        "B": "B (regex)",
+        "B": "B (NER)",
         "B+C": "B+C",
-        "B+H(e=4.0)": "B+H(e=4)",
         "A(local)": "A",
-        "D": "D (TEE)",
-        "E": "E (split)",
+        "A+B(cloud)": "A+B",
+        "A+B+C(cloud)": "A+B+C",
     }
 
     workloads = ["wl1_pii", "wl2_secrets", "wl3_implicit", "wl4_code"]
@@ -132,7 +131,7 @@ def fig_leak_by_kind(rows: list[dict]) -> None:
 
 def fig_pareto(rows: list[dict]) -> None:
     """Scatter: exact leak rate vs latency for WL1."""
-    pareto_options = ["B", "B+C", "B+H(e=4.0)", "B+H(e=2.0)", "B+H(e=8.0)", "A(local)"]
+    pareto_options = ["B", "B+C", "B+H(e=4.0)", "A(local)", "A+B(cloud)", "A+B+C(cloud)"]
     wl = "wl1_pii"
 
     fig, ax = plt.subplots(figsize=(8, 5))
@@ -151,7 +150,7 @@ def fig_pareto(rows: list[dict]) -> None:
     ax.set_xlabel("Median Latency (ms)", fontsize=12)
     ax.set_ylabel("Exact Leak Rate", fontsize=12)
     ax.set_title("Privacy-Latency Pareto Frontier (WL1 PII)", fontsize=13)
-    ax.set_ylim(-0.02, 0.7)
+    ax.set_ylim(-0.02, 0.5)
     ax.grid(alpha=0.3)
     fig.tight_layout()
     fig.savefig(FIGURES_DIR / "pareto.pdf")
