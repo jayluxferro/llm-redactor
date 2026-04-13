@@ -110,11 +110,16 @@ MCP config:
 }
 ```
 
-This exposes three tools:
+This exposes four tools:
 
-- **`redact.transform`** — full pipeline: detect, redact, forward to cloud, restore response
-- **`redact.detect`** — dry-run: show what would be redacted
-- **`redact.stats`** — request/detection/refusal counters
+- **`redact.scrub`** — detect and redact sensitive content; returns redacted text + `session_id`
+- **`redact.restore`** — given a response + `session_id`, restore placeholders to originals
+- **`redact.detect`** — dry-run: show what would be redacted without changing anything
+- **`redact.stats`** — request/detection/restore counters
+
+The workflow: the agent calls `redact.scrub` before sending to the LLM,
+sends the redacted text itself, then calls `redact.restore` on the
+response. The redactor never contacts the cloud — it just scrubs content.
 
 ### Proxy vs MCP
 
