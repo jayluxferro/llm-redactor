@@ -1,0 +1,62 @@
+cff-version: 1.2.0
+title: "LLM-Redactor: An Empirical Evaluation of Eight Techniques for Privacy-Preserving LLM Requests"
+message: "If you use this software, please cite it as below."
+type: software
+authors:
+  - family-names: Agyemang
+    given-names: Justice Owusu
+    email: jay@sperixlabs.org
+    affiliation: "Sperix Labs; VIA Cybersecurity Lab, KNUST; Quantum and Assistive Technologies Lab, KNUST"
+  - family-names: Kponyo
+    given-names: Jerry John
+    email: jjkponyo.soe@knust.edu.gh
+    affiliation: "Quantum and Assistive Technologies Lab, KNUST"
+  - family-names: Amponsah
+    given-names: Elliot
+    email: eamponsah52@st.knust.edu.gh
+    affiliation: "Quantum and Assistive Technologies Lab, KNUST"
+  - family-names: Boakye
+    given-names: Godfred Manu Addo
+    email: gmaboakye@st.knust.edu.gh
+    affiliation: "Quantum and Assistive Technologies Lab, KNUST"
+  - family-names: Agyekum
+    given-names: Kwame Opuni-Boachie Obour
+    email: kooagyekum@knust.edu.gh
+    affiliation: "VIA Cybersecurity Lab, KNUST"
+repository-code: "https://github.com/jayluxferro/llm-redactor"
+license: MIT
+version: 0.1.0
+date-released: "2026-04-15"
+identifiers:
+  - type: url
+    value: "https://arxiv.org/abs/2604.12064"
+    description: arXiv preprint
+keywords:
+  - privacy
+  - llm
+  - redaction
+  - pii
+  - mcp
+  - trusted-execution-environment
+  - differential-privacy
+  - homomorphic-encryption
+preferred-citation:
+  type: article
+  title: "LLM-Redactor: An Empirical Evaluation of Eight Techniques for Privacy-Preserving LLM Requests"
+  authors:
+    - family-names: Agyemang
+      given-names: Justice Owusu
+    - family-names: Kponyo
+      given-names: Jerry John
+    - family-names: Amponsah
+      given-names: Elliot
+    - family-names: Boakye
+      given-names: Godfred Manu Addo
+    - family-names: Agyekum
+      given-names: Kwame Opuni-Boachie Obour
+  year: 2026
+  url: "https://arxiv.org/abs/2604.12064"
+  identifiers:
+    - type: other
+      value: "arXiv:2604.12064"
+      description: arXiv identifier

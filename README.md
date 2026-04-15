@@ -16,7 +16,7 @@ answer.
 
 We evaluate eight techniques on a common benchmark of 1,300 synthetic
 prompts with 4,014 ground-truth annotations across four workload
-classes.
+classes. [arXiv:2604.12064](https://arxiv.org/abs/2604.12064)
 
 ## The eight options
 
@@ -385,6 +385,9 @@ MIT
           Amponsah, Elliot and Boakye, Godfred Manu Addo and
           Agyekum, Kwame Opuni-Boachie Obour},
   year={2026},
-  url={https://github.com/jayluxferro/llm-redactor}
+  eprint={2604.12064},
+  archivePrefix={arXiv},
+  primaryClass={cs.CR},
+  url={https://arxiv.org/abs/2604.12064}
 }
 ```
