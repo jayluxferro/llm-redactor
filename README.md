@@ -18,6 +18,21 @@ We evaluate eight techniques on a common benchmark of 1,300 synthetic
 prompts with 4,014 ground-truth annotations across four workload
 classes. [arXiv:2604.12064](https://arxiv.org/abs/2604.12064)
 
+## Benchmark dataset
+
+The **LLM-Redactor Leak Benchmark** is available on Hugging Face:
+[`jayluxferro/llm-redactor-leak-benchmark`](https://huggingface.co/datasets/jayluxferro/llm-redactor-leak-benchmark)
+
+```python
+from datasets import load_dataset
+
+# All 1,300 samples
+ds = load_dataset("jayluxferro/llm-redactor-leak-benchmark")
+
+# Single workload (wl1_pii | wl2_secrets | wl3_implicit | wl4_code)
+pii = load_dataset("jayluxferro/llm-redactor-leak-benchmark", "wl1_pii")
+```
+
 ## The eight options
 
 | Option | Short name | What it does | Practical today? |
