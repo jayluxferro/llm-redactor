@@ -201,8 +201,14 @@ async def anthropic_messages(request: Request) -> JSONResponse:
     # Ensure stream is false (streaming Anthropic not implemented here).
     outgoing["stream"] = False
 
+    # Forward all headers from the incoming request (minus hop-by-hop).
+    _skip = frozenset({"host", "transfer-encoding", "connection", "content-length", "content-encoding", "anthropic-beta"})
+    upstream_headers = {k: v for k, v in request.headers.items() if k.lower() not in _skip}
+
     try:
-        cloud_response = await forward_anthropic_messages(outgoing, config.cloud_target)
+        cloud_response = await forward_anthropic_messages(
+            outgoing, config.cloud_target, upstream_headers=upstream_headers
+        )
     except Exception as e:
         return JSONResponse(status_code=502, content={"error": str(e)})
 

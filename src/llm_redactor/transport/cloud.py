@@ -65,6 +65,7 @@ async def forward_anthropic_messages(
     config: CloudTargetConfig,
     *,
     timeout: float = 120.0,
+    upstream_headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Forward an Anthropic Messages API request.
 
@@ -74,11 +75,11 @@ async def forward_anthropic_messages(
     api_key = os.environ.get(config.api_key_env, "")
     url = f"{config.endpoint.rstrip('/')}/messages"
 
-    headers: dict[str, str] = {
-        "Content-Type": "application/json",
-        "anthropic-version": "2023-06-01",
-    }
-    if api_key:
+    # Start with forwarded headers, then overlay service essentials.
+    headers: dict[str, str] = dict(upstream_headers) if upstream_headers else {}
+    headers["content-type"] = "application/json"
+    headers["anthropic-version"] = "2023-06-01"
+    if api_key and "x-api-key" not in headers and "authorization" not in headers:
         headers["x-api-key"] = api_key
 
     async with httpx.AsyncClient(timeout=timeout) as client:
@@ -92,16 +93,16 @@ async def forward_anthropic_messages_stream(
     config: CloudTargetConfig,
     *,
     timeout: float = 120.0,
+    upstream_headers: dict[str, str] | None = None,
 ) -> AsyncIterator[bytes]:
     """Forward a streaming Anthropic Messages request and yield raw SSE chunks."""
     api_key = os.environ.get(config.api_key_env, "")
     url = f"{config.endpoint.rstrip('/')}/messages"
 
-    headers: dict[str, str] = {
-        "Content-Type": "application/json",
-        "anthropic-version": "2023-06-01",
-    }
-    if api_key:
+    headers: dict[str, str] = dict(upstream_headers) if upstream_headers else {}
+    headers["content-type"] = "application/json"
+    headers["anthropic-version"] = "2023-06-01"
+    if api_key and "x-api-key" not in headers and "authorization" not in headers:
         headers["x-api-key"] = api_key
 
     async with httpx.AsyncClient(timeout=timeout) as client:
