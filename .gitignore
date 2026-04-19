@@ -53,3 +53,5 @@ evals/results_semantic/
 
 # Misc
 git-push
+config.yaml
+config-*.yaml
