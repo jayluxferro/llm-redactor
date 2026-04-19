@@ -23,44 +23,6 @@ jobs:
       - name: Ruff lint
         run: uv run ruff check src tests evals
 
-      - name: Debug route registration
-        run: |
-          uv run python -c "
-          import sys
-          from fastapi.testclient import TestClient
-          from llm_redactor.transport.http_proxy import app, configure
-          from llm_redactor.config import Config
-          import httpx, starlette, fastapi
-
-          print(f'Python: {sys.version}')
-          print(f'httpx: {httpx.__version__}')
-          print(f'starlette: {starlette.__version__}')
-          print(f'fastapi: {fastapi.__version__}')
-
-          configure(Config())
-
-          routes = [(r.path, r.methods) for r in app.routes if hasattr(r, 'path')]
-          for p, m in sorted(routes):
-              print(f'  {p} {m}')
-
-          client = TestClient(app, raise_server_exceptions=False)
-
-          # Focus on /v1/messages
-          r = client.post('/v1/messages', content='{}')
-          print(f'/v1/messages => {r.status_code} {r.text[:200]}')
-
-          r2 = client.get('/v1/redactor/config')
-          print(f'/v1/redactor/config => {r2.status_code}')
-
-          # Check TestClient internals
-          print(f'base_url: {client.base_url}')
-          print(f'transport: {type(client._transport)}')
-
-          # Check if the middleware_stack is built
-          print(f'middleware_stack type: {type(app.middleware_stack) if hasattr(app, \"middleware_stack\") else \"N/A\"}')
-          print(f'router middleware_stack: {type(app.router.middleware_stack) if hasattr(app.router, \"middleware_stack\") else \"N/A\"}')
-          "
-
       - name: Run tests
         run: uv run pytest -q
 

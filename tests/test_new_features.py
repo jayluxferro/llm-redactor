@@ -97,11 +97,11 @@ def test_anthropic_endpoint_exists():
     from llm_redactor.transport.http_proxy import app, configure
 
     configure(Config())
-    client = TestClient(app)
 
-    # POST without a body should return 422 (validation error), not 404.
-    resp = client.post("/v1/messages", content="{}")
-    assert resp.status_code != 404
+    # Verify the route is in the app's route table (don't rely on a live
+    # upstream, which may return its own 404 that the proxy passes through).
+    route_paths = [r.path for r in app.routes if hasattr(r, "path")]
+    assert "/v1/messages" in route_paths
 
 
 def test_streaming_endpoint_accepts_stream_true():
@@ -125,11 +125,13 @@ def test_streaming_endpoint_accepts_stream_true():
 
 def test_anthropic_content_blocks_redaction():
     """Verify Anthropic content block format is handled."""
+    from unittest.mock import patch
+
     from llm_redactor.transport.http_proxy import app, configure
 
     cfg = Config()
     configure(cfg, use_ner=False)
-    client = TestClient(app)
+    client = TestClient(app, raise_server_exceptions=False)
 
     body = {
         "model": "claude-3-haiku",
@@ -143,11 +145,27 @@ def test_anthropic_content_blocks_redaction():
             },
         ],
     }
-    # Will fail to reach Anthropic API, but redaction should have happened
-    # before the forwarding attempt.
-    resp = client.post("/v1/messages", json=body)
-    # Expect connection error to cloud, not a crash.
-    assert resp.status_code in (200, 502)
+
+    # Mock the upstream Anthropic call so the test doesn't need a real API.
+    mock_response = {
+        "content": [{"type": "text", "text": "Sure, I'll email them."}],
+        "model": "claude-3-haiku",
+        "role": "assistant",
+    }
+
+    async def fake_forward(*args, **kwargs):
+        return mock_response
+
+    with patch(
+        "llm_redactor.transport.http_proxy.forward_anthropic_messages",
+        side_effect=fake_forward,
+    ):
+        resp = client.post("/v1/messages", json=body)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    # Verify redactor metadata was attached.
+    assert "redactor" in data
 
 
 # --------------- Proxy config endpoint still works ---------------
