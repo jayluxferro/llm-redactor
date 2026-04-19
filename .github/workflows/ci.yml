@@ -26,15 +26,42 @@ jobs:
       - name: Debug route registration
         run: |
           uv run python -c "
-          from llm_redactor.transport.http_proxy import app
+          from fastapi.testclient import TestClient
+          from llm_redactor.transport.http_proxy import app, configure
+          from llm_redactor.config import Config
+          configure(Config())
+
           routes = [(r.path, r.methods) for r in app.routes if hasattr(r, 'path')]
           for p, m in sorted(routes):
               print(f'  {p} {m}')
-          assert any(p == '/v1/messages' for p, _ in routes), 'MISSING /v1/messages route!'
+
+          client = TestClient(app)
+          # Test both endpoints
+          r1 = client.post('/v1/chat/completions', content='{}')
+          r2 = client.post('/v1/messages', content='{}')
+          print(f'/v1/chat/completions => {r1.status_code}')
+          print(f'/v1/messages => {r2.status_code}')
+
+          # Check what TestClient resolves
+          import httpx
+          print(f'httpx version: {httpx.__version__}')
+          print(f'base_url: {client.base_url}')
+          print(f'transport type: {type(client._transport)}')
+
+          # Try with explicit base_url
+          client2 = TestClient(app, base_url='http://testserver')
+          r3 = client2.post('/v1/messages', content='{}')
+          print(f'/v1/messages (explicit base_url) => {r3.status_code}')
+
+          # Try httpx directly with ASGITransport
+          transport = httpx.ASGITransport(app=app)
+          with httpx.Client(transport=transport, base_url='http://testserver') as c:
+              r4 = c.post('/v1/messages', content='{}')
+              print(f'/v1/messages (raw httpx) => {r4.status_code}')
           "
 
       - name: Run tests
-        run: uv run pytest -q -x -v tests/test_new_features.py::test_anthropic_endpoint_exists --tb=long 2>&1; uv run pytest -q
+        run: uv run pytest -q
 
       - name: Static types (mypy)
         run: uv run mypy
