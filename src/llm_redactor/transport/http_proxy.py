@@ -149,7 +149,7 @@ async def _handle_openai_stream(
     upstream_headers: dict[str, str] | None = None,
     *,
     strict: bool = False,
-) -> StreamingResponse:
+) -> StreamingResponse | JSONResponse:
     """Redact the request, stream from cloud, restore placeholders in deltas."""
     messages = body.get("messages", [])
     (
