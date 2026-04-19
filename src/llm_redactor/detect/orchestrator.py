@@ -120,11 +120,16 @@ def configure_detection(
     *,
     ner_model: str | None = None,
     ner_confidence_floor: float | None = None,
+    ner_labels_to_ignore: list[str] | None = None,
 ) -> None:
     """Configure detection parameters. Call before first detect_all()."""
     from .ner import configure_ner
 
-    configure_ner(model_name=ner_model, confidence_floor=ner_confidence_floor)
+    configure_ner(
+        model_name=ner_model,
+        confidence_floor=ner_confidence_floor,
+        labels_to_ignore=ner_labels_to_ignore,
+    )
 
 
 def detect_all(text: str, use_ner: bool = True) -> list[Span]:

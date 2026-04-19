@@ -19,29 +19,43 @@ _model_name: str = "en_core_web_sm"
 # Presidio often returns low-confidence matches that are false positives.
 NER_CONFIDENCE_FLOOR: float = 0.5
 
+# spaCy entity labels to skip (e.g. CARDINAL, ORDINAL — not PII).
+_labels_to_ignore: set[str] = set()
 
-def configure_ner(*, model_name: str | None = None, confidence_floor: float | None = None) -> None:
+
+def configure_ner(
+    *,
+    model_name: str | None = None,
+    confidence_floor: float | None = None,
+    labels_to_ignore: list[str] | None = None,
+) -> None:
     """Configure NER before first use. Must be called before _get_analyzer()."""
-    global _model_name, NER_CONFIDENCE_FLOOR, _analyzer
+    global _model_name, NER_CONFIDENCE_FLOOR, _analyzer, _labels_to_ignore
     if model_name is not None:
         _model_name = model_name
         _analyzer = None  # force re-init with new model
     if confidence_floor is not None:
         NER_CONFIDENCE_FLOOR = confidence_floor
+    if labels_to_ignore is not None:
+        _labels_to_ignore = {lbl.upper() for lbl in labels_to_ignore}
 
 
 def _get_analyzer():
     global _analyzer
     if _analyzer is None:
         from presidio_analyzer import AnalyzerEngine
-        from presidio_analyzer.nlp_engine import NlpEngineProvider
+        from presidio_analyzer.nlp_engine import NerModelConfiguration, NlpEngineProvider
 
+        ner_model_config = NerModelConfiguration(
+            labels_to_ignore=list(_labels_to_ignore | {"O"}),
+        )
         nlp_config = {
             "nlp_engine_name": "spacy",
             "models": [{"lang_code": "en", "model_name": _model_name}],
         }
         provider = NlpEngineProvider(nlp_configuration=nlp_config)
         nlp_engine = provider.create_engine()
+        nlp_engine.ner_model_configuration = ner_model_config
         _analyzer = AnalyzerEngine(nlp_engine=nlp_engine)
     return _analyzer
 
@@ -67,9 +81,17 @@ def detect_ner(text: str, language: str = "en") -> list[Span]:
     """Run presidio analyzer and return detected spans.
 
     Spans below NER_CONFIDENCE_FLOOR are dropped to reduce false positives.
+    Entity types listed in ``_labels_to_ignore`` are excluded from analysis.
     """
     analyzer = _get_analyzer()
-    results = analyzer.analyze(text=text, language=language)
+
+    # When labels are ignored, restrict Presidio to only non-ignored entities.
+    entities = None
+    if _labels_to_ignore:
+        all_entities = {e for r in analyzer.registry.recognizers for e in r.supported_entities}
+        entities = sorted(all_entities - _labels_to_ignore) or None
+
+    results = analyzer.analyze(text=text, language=language, entities=entities)
 
     spans: list[Span] = []
     seen: set[tuple[int, int]] = set()

@@ -23,6 +23,7 @@ def _apply_detection_config(cfg: Config) -> None:
     configure_detection(
         ner_model=cfg.local_model.ner_model,
         ner_confidence_floor=cfg.local_model.ner_confidence_floor,
+        ner_labels_to_ignore=cfg.local_model.ner_labels_to_ignore,
     )
 
 

@@ -139,9 +139,16 @@ def _parse_verdicts(raw: str, spans: list[Span]) -> list[Span]:
         verdicts = json.loads(clean)
         if isinstance(verdicts, list):
             drop_indices: set[int] = set()
-            for v in verdicts:
-                idx = v.get("span", 0) - 1  # 1-indexed
-                if v.get("verdict", "").upper() == "DROP" and 0 <= idx < len(spans):
+            for i, v in enumerate(verdicts):
+                if isinstance(v, dict):
+                    idx = v.get("span", i + 1) - 1  # 1-indexed
+                    verdict = v.get("verdict", "")
+                elif isinstance(v, str):
+                    idx = i
+                    verdict = v
+                else:
+                    continue
+                if verdict.upper() == "DROP" and 0 <= idx < len(spans):
                     drop_indices.add(idx)
             return [s for i, s in enumerate(spans) if i not in drop_indices]
     except (json.JSONDecodeError, KeyError, TypeError):

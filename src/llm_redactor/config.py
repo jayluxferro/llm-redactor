@@ -16,6 +16,18 @@ class LocalModelConfig:
     chat_model: str = "llama3.2:3b"
     ner_model: str | None = None  # e.g. en_core_web_trf, xx_ent_wiki_sm
     ner_confidence_floor: float = 0.5  # drop NER results below this
+    ner_labels_to_ignore: list[str] = field(
+        default_factory=lambda: [
+            "CARDINAL",
+            "MONEY",
+            "ORDINAL",
+            "QUANTITY",
+            "PRODUCT",
+            "WORK_OF_ART",
+            "LANGUAGE",
+            "EVENT",
+        ]
+    )
 
 
 @dataclass
@@ -98,7 +110,19 @@ class PipelineConfig:
 class PolicyConfig:
     strict_refuse_on_unknown_sensitive: bool = True
     categories: list[str] = field(
-        default_factory=lambda: ["pii", "secret", "org_identifier", "customer_name"]
+        default_factory=lambda: [
+            "identity",
+            "contact",
+            "government_id",
+            "financial",
+            "medical",
+            "temporal",
+            "credential",
+            "cloud_credential",
+            "vendor_api_key",
+            "private_key",
+            "infrastructure",
+        ]
     )
     extend_patterns_file: str = ".llm_redactor/patterns.yaml"
 

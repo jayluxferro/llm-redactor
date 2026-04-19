@@ -324,6 +324,79 @@ uv run llm-redactor mcp
 
 Precedence: environment variables > YAML file > defaults.
 
+## Detection categories and tags
+
+Every detected span has a **kind** (the specific detector tag) and a
+**category** (the policy-level grouping). Use `policy.categories` in your
+YAML config to enable or disable entire families:
+
+```yaml
+policy:
+  categories:
+    - identity
+    - contact
+    - credential
+    - cloud_credential
+    # omit categories you don't need
+```
+
+### Full taxonomy
+
+| Category | Kind (tag) | Source | Description |
+|---|---|---|---|
+| **identity** | `person` | NER | Person name |
+| | `nationality` | NER | National, religious, or political group |
+| | `employee_id` | regex | Employee identifier (e.g. `EMP-1234`) |
+| **contact** | `email` | regex, NER | Email address |
+| | `phone` | NER | Phone number (NER-detected) |
+| | `phone_us` | regex | US phone number |
+| | `phone_intl` | regex | International phone number |
+| | `location` | NER | Physical location / address |
+| | `url` | NER | URL |
+| | `ip_address` | NER | IP address (NER-detected) |
+| | `ip_v4` | regex | IPv4 address |
+| | `ip_v6` | regex | IPv6 address |
+| **government_id** | `ssn` | regex, NER | US Social Security Number |
+| **financial** | `credit_card` | regex, NER | Credit card number |
+| | `iban` | NER | IBAN bank account number |
+| **medical** | `medical_license` | NER | Medical license number |
+| **temporal** | `date_time` | NER | Date or time expression |
+| **credential** | `password` | regex | Password in assignment |
+| | `secret_assignment` | regex | Secret/token/credential in assignment |
+| | `bearer_token` | regex | HTTP Bearer token |
+| | `basic_auth` | regex | HTTP Basic auth header |
+| | `jwt` | regex | JSON Web Token |
+| | `generic_api_key` | regex | Generic `api_key=...` pattern |
+| **cloud_credential** | `aws_access_key` | regex | AWS access key ID (`AKIA...`) |
+| | `aws_secret_key` | regex | AWS secret access key |
+| | `aws_session_token` | regex | AWS session token |
+| | `gcp_service_account` | regex | GCP service account email |
+| | `gcp_api_key` | regex | GCP API key (`AIza...`) |
+| | `azure_storage_key` | regex | Azure storage account key |
+| | `azure_connection_string` | regex | Azure connection string |
+| **vendor_api_key** | `openai_api_key` | regex | OpenAI API key (`sk-...`) |
+| | `anthropic_api_key` | regex | Anthropic API key (`sk-ant-...`) |
+| | `github_token` | regex | GitHub token (`ghp_...`) |
+| | `gitlab_token` | regex | GitLab token (`glpat-...`) |
+| | `slack_token` | regex | Slack token (`xox...`) |
+| | `slack_webhook` | regex | Slack incoming webhook URL |
+| | `stripe_key` | regex | Stripe API key (`sk_live_...`) |
+| | `twilio_key` | regex | Twilio API key (`SK...`) |
+| | `sendgrid_key` | regex | SendGrid API key (`SG....`) |
+| | `mailgun_key` | regex | Mailgun API key (`key-...`) |
+| | `npm_token` | regex | npm access token |
+| | `pypi_token` | regex | PyPI API token |
+| | `heroku_api_key` | regex | Heroku API key (UUID format) |
+| **private_key** | `private_key_pem` | regex | PEM-encoded private key |
+| | `ssh_private_key` | regex | OpenSSH private key |
+| | `pgp_private_key` | regex | PGP private key block |
+| **infrastructure** | `connection_string` | regex | Database / message broker URI |
+| | `hostname_internal` | regex | Internal hostname (`.internal`, `.corp`, etc.) |
+
+Custom patterns added via `policy.extend_patterns_file` get the
+category `unknown` unless you add them to the `CATEGORY_MAP` in
+`detect/types.py`.
+
 ## Project structure
 
 ```
