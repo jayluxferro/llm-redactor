@@ -16,6 +16,7 @@ async def forward_chat_completion(
     config: CloudTargetConfig,
     *,
     timeout: float = 120.0,
+    upstream_headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Forward an OpenAI-compatible chat completion request to the cloud target.
 
@@ -25,8 +26,9 @@ async def forward_chat_completion(
     api_key = os.environ.get(config.api_key_env, "")
     url = f"{config.endpoint.rstrip('/')}/chat/completions"
 
-    headers: dict[str, str] = {"Content-Type": "application/json"}
-    if api_key:
+    headers: dict[str, str] = dict(upstream_headers) if upstream_headers else {}
+    headers["content-type"] = "application/json"
+    if api_key and "authorization" not in headers:
         headers["Authorization"] = f"Bearer {api_key}"
 
     async with httpx.AsyncClient(timeout=timeout) as client:
@@ -40,6 +42,7 @@ async def forward_chat_completion_stream(
     config: CloudTargetConfig,
     *,
     timeout: float = 120.0,
+    upstream_headers: dict[str, str] | None = None,
 ) -> AsyncIterator[bytes]:
     """Forward a streaming chat completion request and yield raw SSE chunks.
 
@@ -49,8 +52,9 @@ async def forward_chat_completion_stream(
     api_key = os.environ.get(config.api_key_env, "")
     url = f"{config.endpoint.rstrip('/')}/chat/completions"
 
-    headers: dict[str, str] = {"Content-Type": "application/json"}
-    if api_key:
+    headers: dict[str, str] = dict(upstream_headers) if upstream_headers else {}
+    headers["content-type"] = "application/json"
+    if api_key and "authorization" not in headers:
         headers["Authorization"] = f"Bearer {api_key}"
 
     async with httpx.AsyncClient(timeout=timeout) as client:

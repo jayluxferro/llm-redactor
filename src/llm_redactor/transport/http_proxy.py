@@ -67,6 +67,15 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
     pipeline = _get_pipeline()
     config = _get_config()
 
+    # Forward all headers from the incoming request (minus hop-by-hop).
+    _skip = frozenset({"host", "transfer-encoding", "connection", "content-length", "content-encoding"})
+    upstream_headers = {k: v for k, v in request.headers.items() if k.lower() not in _skip}
+
+    # Tool-bearing requests bypass the redaction pipeline (tool blocks
+    # can't be reliably redacted/restored) and forward directly.
+    if "tools" in body or "functions" in body:
+        return await _forward_openai_transparent(body, config, upstream_headers)
+
     # Allow per-request overrides via extra_body.redactor.
     extra = body.get("extra_body", {}).get("redactor", {})
     strict_override = extra.get("strict")
@@ -76,10 +85,10 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
     is_stream = body.get("stream", False)
 
     if is_stream:
-        return await _handle_openai_stream(body, pipeline, config)
+        return await _handle_openai_stream(body, pipeline, config, upstream_headers)
 
     try:
-        result = await pipeline.run(body)
+        result = await pipeline.run(body, upstream_headers=upstream_headers)
     except RefusalError as e:
         return _refusal_response(e)
 
@@ -98,6 +107,7 @@ async def _handle_openai_stream(
     body: dict[str, Any],
     pipeline: OptionBPipeline,
     config: Config,
+    upstream_headers: dict[str, str] | None = None,
 ) -> StreamingResponse:
     """Redact the request, stream from cloud, restore placeholders in deltas."""
     # Detect and redact messages.
@@ -121,7 +131,9 @@ async def _handle_openai_stream(
 
     async def generate():
         accumulated = ""
-        async for chunk in forward_chat_completion_stream(outgoing, config.cloud_target):
+        async for chunk in forward_chat_completion_stream(
+            outgoing, config.cloud_target, upstream_headers=upstream_headers,
+        ):
             # Parse SSE lines, restore placeholders in content deltas.
             for line in chunk.decode("utf-8", errors="replace").splitlines():
                 if not line.startswith("data: "):
@@ -146,6 +158,38 @@ async def _handle_openai_stream(
                     yield (line + "\n").encode()
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+async def _forward_openai_transparent(
+    body: dict[str, Any],
+    config: Config,
+    headers: dict[str, str],
+) -> StreamingResponse | JSONResponse:
+    """Transparent proxy for OpenAI tool requests — bypass redaction pipeline."""
+    from ..transport.cloud import forward_chat_completion, forward_chat_completion_stream
+
+    is_stream = body.get("stream", False)
+    if is_stream:
+        async def generate():
+            async for chunk in forward_chat_completion_stream(
+                body, config.cloud_target, upstream_headers=headers,
+            ):
+                yield chunk
+
+        return StreamingResponse(generate(), media_type="text/event-stream")
+
+    try:
+        resp = await forward_chat_completion(
+            body, config.cloud_target, upstream_headers=headers,
+        )
+    except httpx.HTTPStatusError as e:
+        try:
+            err_body = e.response.json()
+        except Exception:
+            err_body = {"error": e.response.text[:500]}
+        return JSONResponse(status_code=e.response.status_code, content=err_body)
+
+    return JSONResponse(content=resp)
 
 
 # --------------- Anthropic Messages endpoint ---------------

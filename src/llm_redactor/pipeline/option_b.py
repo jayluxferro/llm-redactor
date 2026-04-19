@@ -40,7 +40,11 @@ class OptionBPipeline:
     def stats(self) -> dict[str, int]:
         return dict(self._stats)
 
-    async def run(self, body: dict[str, Any]) -> PipelineResult:
+    async def run(
+        self,
+        body: dict[str, Any],
+        upstream_headers: dict[str, str] | None = None,
+    ) -> PipelineResult:
         """Run the full Option B pipeline on a chat completion request body."""
         self._stats["requests"] += 1
 
@@ -92,6 +96,7 @@ class OptionBPipeline:
         # Forward to cloud.
         cloud_response = await forward_chat_completion(
             outgoing, self.config.cloud_target,
+            upstream_headers=upstream_headers,
         )
 
         # Build the combined reverse map from all redacted messages.
