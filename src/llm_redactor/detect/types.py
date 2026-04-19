@@ -100,6 +100,7 @@ ALL_CATEGORIES: list[str] = sorted(set(CATEGORY_MAP.values()))
 # ---------------------------------------------------------------------------
 
 CATEGORY_ALIASES: dict[str, list[str]] = {
+    "all": ALL_CATEGORIES,
     "pii": ["identity", "contact", "government_id", "financial", "medical", "temporal"],
     "secret": ["credential", "cloud_credential", "vendor_api_key", "private_key"],
     "org_identifier": ["infrastructure"],

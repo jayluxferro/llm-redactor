@@ -336,6 +336,7 @@ The four top-level aliases are the defaults and cover everything:
 
 | Alias | Expands to |
 |---|---|
+| `all` | Every category below |
 | `pii` | identity, contact, government_id, financial, medical, temporal |
 | `secret` | credential, cloud_credential, vendor_api_key, private_key |
 | `org_identifier` | infrastructure |
@@ -345,6 +346,10 @@ The four top-level aliases are the defaults and cover everything:
 # Default — detects all sensitive data:
 policy:
   categories: [pii, secret, org_identifier, customer_name]
+
+# Shorthand for everything:
+policy:
+  categories: [all]
 ```
 
 You can mix aliases and fine-grained categories freely:
