@@ -29,7 +29,7 @@ from mcp.types import TextContent, Tool
 
 from ..config import Config, load_config
 from ..detect.orchestrator import detect_all, detect_all_validated
-from ..detect.types import Span
+from ..detect.types import Span, filter_by_categories
 from ..observability import log_event
 from ..redact.placeholder import redact
 from ..redact.restore import restore
@@ -73,13 +73,15 @@ async def _detect_text(
     )
     if do_val:
         model = _config.pipeline.llm_validation.model or _config.local_model.chat_model
-        return await detect_all_validated(
+        spans = await detect_all_validated(
             text,
             use_ner=use_ner,
             ollama_endpoint=_config.local_model.endpoint,
             ollama_model=model,
         )
-    return detect_all(text, use_ner=use_ner)
+    else:
+        spans = detect_all(text, use_ner=use_ner)
+    return filter_by_categories(spans, _config.policy.categories)
 
 
 @server.list_tools()

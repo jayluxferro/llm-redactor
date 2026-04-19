@@ -74,6 +74,7 @@ def detect(
     """Dry-run: detect and optionally redact sensitive spans without sending anything."""
     from .detect.orchestrator import detect_all
     from .detect.regex import load_custom_patterns
+    from .detect.types import filter_by_categories
 
     cfg = load_config(Path(config_path))
     _apply_detection_config(cfg)
@@ -81,6 +82,7 @@ def detect(
         load_custom_patterns(cfg.policy.extend_patterns_file)
 
     spans = detect_all(text, use_ner=ner)
+    spans = filter_by_categories(spans, cfg.policy.categories)
     if not spans:
         console.print("[green]No sensitive spans detected.[/green]")
         return

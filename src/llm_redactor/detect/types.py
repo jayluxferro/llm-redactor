@@ -124,6 +124,12 @@ def resolve_categories(names: list[str]) -> set[str]:
     return resolved
 
 
+def filter_by_categories(spans: list[Span], categories: list[str]) -> list[Span]:
+    """Keep only *spans* whose category is in *categories* (after alias expansion)."""
+    allowed = resolve_categories(categories)
+    return [s for s in spans if s.category in allowed]
+
+
 def kind_to_category(kind: str) -> str:
     """Return the category for a detection *kind*, or ``'unknown'``."""
     return CATEGORY_MAP.get(kind, "unknown")

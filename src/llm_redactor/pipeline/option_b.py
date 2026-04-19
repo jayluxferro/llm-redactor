@@ -8,7 +8,7 @@ from typing import Any, cast
 
 from ..config import Config
 from ..detect.orchestrator import detect_all, detect_all_validated
-from ..detect.types import Span
+from ..detect.types import Span, filter_by_categories
 from ..observability import log_event
 from ..redact.placeholder import RedactionResult, redact
 from ..redact.restore import restore
@@ -63,13 +63,15 @@ class OptionBPipeline:
         """Run configured detectors (optional LLM validation via Ollama)."""
         if self.config.pipeline.llm_validation.enabled:
             model = self.config.pipeline.llm_validation.model or self.config.local_model.chat_model
-            return await detect_all_validated(
+            spans = await detect_all_validated(
                 text,
                 use_ner=self.use_ner,
                 ollama_endpoint=self.config.local_model.endpoint,
                 ollama_model=model,
             )
-        return detect_all(text, use_ner=self.use_ner)
+        else:
+            spans = detect_all(text, use_ner=self.use_ner)
+        return filter_by_categories(spans, self.config.policy.categories)
 
     async def redact_chat_messages(
         self,

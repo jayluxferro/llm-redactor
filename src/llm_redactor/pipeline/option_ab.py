@@ -12,7 +12,7 @@ from typing import Any
 
 from ..config import Config
 from ..detect.orchestrator import detect_all
-from ..detect.types import Span
+from ..detect.types import Span, filter_by_categories
 from ..pipeline.option_a import classify
 from ..redact.placeholder import RedactionResult, redact
 from ..redact.restore import restore
@@ -105,6 +105,7 @@ class OptionABPipeline:
             if not isinstance(content, str) or not content:
                 continue
             spans = detect_all(content, use_ner=self.use_ner)
+            spans = filter_by_categories(spans, self.config.policy.categories)
             all_detections.extend(spans)
             if spans:
                 result = redact(content, spans)

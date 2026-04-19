@@ -12,7 +12,7 @@ from typing import Any
 
 from ..config import Config
 from ..detect.orchestrator import detect_all
-from ..detect.types import Span
+from ..detect.types import Span, filter_by_categories
 from ..noise.dp import DPResult, inject_noise
 from ..redact.placeholder import RedactionResult, redact
 from ..redact.restore import restore
@@ -50,6 +50,7 @@ class OptionHPipeline:
             if not isinstance(content, str) or not content:
                 continue
             spans = detect_all(content, use_ner=self.use_ner)
+            spans = filter_by_categories(spans, self.config.policy.categories)
             all_detections.extend(spans)
             if spans:
                 result = redact(content, spans)
