@@ -23,8 +23,18 @@ jobs:
       - name: Ruff lint
         run: uv run ruff check src tests evals
 
+      - name: Debug route registration
+        run: |
+          uv run python -c "
+          from llm_redactor.transport.http_proxy import app
+          routes = [(r.path, r.methods) for r in app.routes if hasattr(r, 'path')]
+          for p, m in sorted(routes):
+              print(f'  {p} {m}')
+          assert any(p == '/v1/messages' for p, _ in routes), 'MISSING /v1/messages route!'
+          "
+
       - name: Run tests
-        run: uv run pytest -q
+        run: uv run pytest -q -x -v tests/test_new_features.py::test_anthropic_endpoint_exists --tb=long 2>&1; uv run pytest -q
 
       - name: Static types (mypy)
         run: uv run mypy
