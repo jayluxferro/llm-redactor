@@ -99,6 +99,19 @@ against it.
 
 **This is a key limitation**. Document it clearly in every README.
 
+### Scenario 3b — OpenAI `tools` / `functions` on the HTTP proxy
+
+Chat requests that include **`tools`** or **`functions`** cannot be span-redacted in place
+without breaking JSON schemas. With **`transport.tools_policy: bypass`** (default), the
+proxy forwards the body **unchanged** to the cloud target, including any secrets embedded
+in tool definitions or arguments — the same trust boundary as calling the vendor API
+directly. With **`transport.tools_policy: refuse`**, the proxy returns an error and **no**
+request is sent for that call.
+
+**Mitigation**: treat tool payloads as out-of-band for Option B; use **refuse** when
+agents must not exfiltrate structured tool data; keep secrets out of tool schemas when
+using **bypass**.
+
 ### Scenario 4 — response-time side channel
 
 The vendor measures response generation time to infer how long the
@@ -109,15 +122,24 @@ which we explicitly do not add.
 
 ### Scenario 5 — placeholder leakage
 
-The redactor replaces `alice@example.org` with `{EMAIL_1}`, but the
-cloud model's response references `{EMAIL_1}` in a way that leaks
-its structure (e.g. "I'll send the email to {EMAIL_1}, confirming
-with {EMAIL_1} that..."). The restorer puts the real email back,
-but the response structure reveals that there were two references
-to the same person, which the cloud model now knows.
+The redactor replaces `alice@example.org` with a typed placeholder (Unicode brackets in
+the implementation, e.g. `⟨EMAIL_1⟩`). The cloud model may echo that placeholder in the
+completion; the restorer substitutes the original span **only on exact placeholder
+matches**. If **`pipeline.placeholder_request_tag`** is enabled, a per-request random
+suffix is embedded in each token (`⟨EMAIL_1·…⟩`), shrinking accidental collisions with
+literal user or model text that resembles a placeholder.
 
-**Mitigation**: use opaque random tokens, not typed ones, when
-maximum privacy is needed. Document the trade-off.
+**Streaming**: the proxy accumulates redacted assistant text across SSE chunks, runs
+`restore` on the growing prefix, and emits only the **new** restored suffix in each
+`delta.content`. Because completing a placeholder can change characters before the end
+of the chunk (so the prior restored string is not always a literal prefix of the next),
+suffixes are derived via **longest common prefix** between successive full restores so
+clients concatenating deltas still recover the same plaintext as in the non-streaming
+path (including placeholders split across chunk boundaries).
+
+**Mitigation**: typed placeholders aid debugging but reveal *kind* counts to the vendor;
+use request tags where collisions are a concern; treat anything the model invents that
+is not in the reverse map as intentionally left unchanged.
 
 ### Scenario 6 — detector adversarial input
 

@@ -10,6 +10,8 @@ from ..detect.types import Span
 # Users asking about placeholder syntax won't accidentally trigger restoration.
 PREFIX = "\u27e8"  # ⟨
 SUFFIX = "\u27e9"  # ⟩
+# U+00B7 middle dot — separates kind counter from per-request tag inside brackets.
+_TAG_SEP = "\u00b7"
 
 
 @dataclass
@@ -31,11 +33,15 @@ class PlaceholderGenerator:
 
     _counters: dict[str, int] = field(default_factory=dict)
     _seen: dict[str, str] = field(default_factory=dict)  # original text -> placeholder
+    session_tag: str | None = None  # optional per-request token inside ⟨KIND_n·tag⟩
 
     def _next_placeholder(self, kind: str) -> str:
         count = self._counters.get(kind, 0) + 1
         self._counters[kind] = count
-        return f"{PREFIX}{kind.upper()}_{count}{SUFFIX}"
+        core = f"{kind.upper()}_{count}"
+        if self.session_tag:
+            core = f"{core}{_TAG_SEP}{self.session_tag}"
+        return f"{PREFIX}{core}{SUFFIX}"
 
     def get_placeholder(self, span: Span) -> str:
         """Return a stable placeholder for the given span's text."""
@@ -46,13 +52,18 @@ class PlaceholderGenerator:
         return placeholder
 
 
-def redact(text: str, spans: list[Span]) -> RedactionResult:
+def redact(
+    text: str,
+    spans: list[Span],
+    *,
+    session_tag: str | None = None,
+) -> RedactionResult:
     """Replace detected spans with placeholders, returning the redacted
     text and the reverse map needed for restoration."""
     if not spans:
         return RedactionResult(redacted_text=text, reverse_map={}, placeholders=[])
 
-    gen = PlaceholderGenerator()
+    gen = PlaceholderGenerator(session_tag=session_tag)
 
     # Sort spans by start position descending so replacements don't shift offsets.
     sorted_spans = sorted(spans, key=lambda s: s.start, reverse=True)

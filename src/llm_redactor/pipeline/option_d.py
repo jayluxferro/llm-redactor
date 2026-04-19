@@ -33,10 +33,12 @@ class OptionDPipeline:
     """Option D: forward to TEE-hosted inference after attestation."""
 
     config: Config
-    _stats: dict[str, int] = field(default_factory=lambda: {
-        "requests": 0,
-        "attestation_failures": 0,
-    })
+    _stats: dict[str, int] = field(
+        default_factory=lambda: {
+            "requests": 0,
+            "attestation_failures": 0,
+        }
+    )
 
     @property
     def stats(self) -> dict[str, int]:

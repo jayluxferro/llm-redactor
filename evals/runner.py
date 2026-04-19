@@ -13,23 +13,22 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 from llm_redactor.config import Config
 from llm_redactor.detect.orchestrator import detect_all
-from llm_redactor.detect.types import Span
-from llm_redactor.redact.placeholder import redact
-from llm_redactor.redact.restore import restore
 from llm_redactor.noise.dp import inject_noise
 from llm_redactor.pipeline.option_a import classify
+from llm_redactor.redact.placeholder import redact
+from llm_redactor.redact.restore import restore
 from llm_redactor.rephrase.local_model import rephrase as rephrase_text
 from llm_redactor.rephrase.validator import validate_rephrase
-from llm_redactor.transport.tee import verify_attestation
-from llm_redactor.transport.split_inference import split_forward_stub
 from llm_redactor.transport.fhe import fhe_classify_stub
 from llm_redactor.transport.mpc import mpc_embedding_stub
+from llm_redactor.transport.split_inference import split_forward_stub
+from llm_redactor.transport.tee import verify_attestation
 
 from .schema import Sample, read_workload
 
@@ -209,7 +208,9 @@ async def run_option_a_offline(
     t0 = time.perf_counter()
 
     classification = await classify(
-        sample.text, endpoint=ollama_endpoint, model=ollama_model,
+        sample.text,
+        endpoint=ollama_endpoint,
+        model=ollama_model,
     )
 
     elapsed = (time.perf_counter() - t0) * 1000
@@ -299,15 +300,8 @@ async def run_option_d_offline(
     """
     t0 = time.perf_counter()
 
-    att_verified = False
-    att_error: str | None = None
     if attestation_url:
-        att = await verify_attestation(attestation_url)
-        att_verified = att.verified
-        att_error = att.error
-    else:
-        # Offline mode: assume attestation passes (demo).
-        att_verified = True
+        await verify_attestation(attestation_url)
 
     elapsed = (time.perf_counter() - t0) * 1000
 
@@ -341,7 +335,7 @@ async def run_option_e_offline(
 
     token_ids = [ord(c) for c in sample.text[:512]]
 
-    result = await split_forward_stub(
+    await split_forward_stub(
         token_ids,
         remote_url="http://localhost:0/stub",  # unreachable; stub tolerates
         local_layers=local_layers,
@@ -391,8 +385,14 @@ async def run_option_f_offline(
         outgoing_text="",  # only ciphertext sent
         response_text="",
         restored_text="",
-        detections=[{"kind": "fhe_classification", "confidence": result.confidence,
-                      "text": result.prediction, "source": "fhe"}],
+        detections=[
+            {
+                "kind": "fhe_classification",
+                "confidence": result.confidence,
+                "text": result.prediction,
+                "source": "fhe",
+            }
+        ],
         reverse_map={},
         latency_ms=elapsed,
         mode="offline",
@@ -414,7 +414,7 @@ async def run_option_g_offline(
 
     token_ids = [ord(c) for c in sample.text[:128]]
 
-    result = await mpc_embedding_stub(
+    await mpc_embedding_stub(
         token_ids,
         num_parties=num_parties,
         embedding_dim=embedding_dim,
@@ -489,7 +489,9 @@ async def run_option_ab_offline(
 
     text = sample.text
     classification = await classify(
-        text, endpoint=ollama_endpoint, model=ollama_model,
+        text,
+        endpoint=ollama_endpoint,
+        model=ollama_model,
     )
 
     if classification == "TRIVIAL":
@@ -541,7 +543,9 @@ async def run_option_abc_offline(
 
     text = sample.text
     classification = await classify(
-        text, endpoint=ollama_endpoint, model=ollama_model,
+        text,
+        endpoint=ollama_endpoint,
+        model=ollama_model,
     )
 
     if classification == "TRIVIAL":
@@ -643,7 +647,9 @@ def run_workload(
         elif option == "A":
             result = asyncio.run(
                 run_option_a_offline(
-                    sample, ollama_endpoint=ollama_endpoint, ollama_model=ollama_model,
+                    sample,
+                    ollama_endpoint=ollama_endpoint,
+                    ollama_model=ollama_model,
                 )
             )
             results.append(result)
@@ -652,9 +658,7 @@ def run_workload(
         elif option == "B" and mode == "online":
             if config is None:
                 raise ValueError("Config required for online mode")
-            result = asyncio.run(
-                run_option_b_online(sample, config, use_ner=use_ner, model=model)
-            )
+            result = asyncio.run(run_option_b_online(sample, config, use_ner=use_ner, model=model))
             results.append(result)
         elif option == "B+C":
             result = asyncio.run(
@@ -667,9 +671,7 @@ def run_workload(
             )
             results.append(result)
         elif option == "B+H":
-            results.append(
-                run_option_bh_offline(sample, use_ner=use_ner, epsilon=epsilon)
-            )
+            results.append(run_option_bh_offline(sample, use_ner=use_ner, epsilon=epsilon))
         elif option == "D":
             result = asyncio.run(run_option_d_offline(sample))
             results.append(result)
@@ -683,23 +685,25 @@ def run_workload(
             result = asyncio.run(run_option_g_offline(sample))
             results.append(result)
         elif option == "B+D":
-            result = asyncio.run(
-                run_option_bd_offline(sample, use_ner=use_ner)
-            )
+            result = asyncio.run(run_option_bd_offline(sample, use_ner=use_ner))
             results.append(result)
         elif option == "A+B":
             result = asyncio.run(
                 run_option_ab_offline(
-                    sample, use_ner=use_ner,
-                    ollama_endpoint=ollama_endpoint, ollama_model=ollama_model,
+                    sample,
+                    use_ner=use_ner,
+                    ollama_endpoint=ollama_endpoint,
+                    ollama_model=ollama_model,
                 )
             )
             results.append(result)
         elif option == "A+B+C":
             result = asyncio.run(
                 run_option_abc_offline(
-                    sample, use_ner=use_ner,
-                    ollama_endpoint=ollama_endpoint, ollama_model=ollama_model,
+                    sample,
+                    use_ner=use_ner,
+                    ollama_endpoint=ollama_endpoint,
+                    ollama_model=ollama_model,
                 )
             )
             results.append(result)

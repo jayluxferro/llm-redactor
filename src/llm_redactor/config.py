@@ -32,7 +32,9 @@ class OptionConfig:
 
 @dataclass
 class LLMValidationConfig:
-    enabled: bool = False  # opt-in: adds one Ollama round-trip
+    """Optional local LLM pass to filter NER false positives (Ollama)."""
+
+    enabled: bool = False  # opt-in: adds one Ollama round-trip per text/message batch
     model: str = ""  # empty = use local_model.chat_model
 
 
@@ -80,6 +82,8 @@ class OptionHConfig(OptionConfig):
 @dataclass
 class PipelineConfig:
     llm_validation: LLMValidationConfig = field(default_factory=LLMValidationConfig)
+    # When true, each HTTP/proxy request gets random bytes in placeholders (e.g. ⟨EMAIL_1·a1b2c3d⟩).
+    placeholder_request_tag: bool = False
     opt_a_local_only: OptionConfig = field(default_factory=OptionConfig)
     opt_b_redact: OptionBConfig = field(default_factory=OptionBConfig)
     opt_c_rephrase: OptionCConfig = field(default_factory=OptionCConfig)
@@ -104,6 +108,11 @@ class TransportConfig:
     mcp: bool = True
     http: bool = True
     http_port: int = 7789
+    # bypass: forward tool/function calls without redaction (default).
+    # refuse: reject with 422 so nothing hits the cloud without redaction.
+    tools_policy: str = "bypass"
+    # Cap in-memory MCP scrub sessions (oldest evicted; restore then fails safely).
+    mcp_session_cap: int = 2000
 
 
 @dataclass
@@ -153,6 +162,14 @@ def _env_overrides(config: Config) -> Config:
         config.cloud_target.api_key_env = ep
     if ep := os.environ.get("LLM_REDACTOR_EPSILON"):
         config.pipeline.opt_h_dp_noise.epsilon = float(ep)
+    if os.environ.get("LLM_REDACTOR_LLM_VALIDATION", "").lower() in {"1", "true", "yes"}:
+        config.pipeline.llm_validation.enabled = True
+    if os.environ.get("LLM_REDACTOR_PLACEHOLDER_REQUEST_TAG", "").lower() in {"1", "true", "yes"}:
+        config.pipeline.placeholder_request_tag = True
+    if ep := os.environ.get("LLM_REDACTOR_TOOLS_POLICY"):
+        config.transport.tools_policy = ep.strip().lower()
+    if ep := os.environ.get("LLM_REDACTOR_MCP_SESSION_CAP"):
+        config.transport.mcp_session_cap = int(ep)
     return config
 
 

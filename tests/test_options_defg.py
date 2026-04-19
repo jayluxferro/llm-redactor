@@ -2,22 +2,20 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
-from llm_redactor.config import Config
-from llm_redactor.pipeline.option_d import OptionDPipeline, TEEAttestationError
-from llm_redactor.pipeline.option_e import OptionEPipeline
-from llm_redactor.pipeline.option_f import OptionFPipeline
-from llm_redactor.pipeline.option_g import OptionGPipeline
 from evals.runner import (
     run_option_d_offline,
     run_option_e_offline,
     run_option_f_offline,
     run_option_g_offline,
 )
-from evals.schema import Sample, Annotation
+from evals.schema import Annotation, Sample
+from llm_redactor.config import Config
+from llm_redactor.pipeline.option_d import OptionDPipeline
+from llm_redactor.pipeline.option_e import OptionEPipeline
+from llm_redactor.pipeline.option_f import OptionFPipeline
+from llm_redactor.pipeline.option_g import OptionGPipeline
 
 
 @pytest.fixture
@@ -37,6 +35,7 @@ def config() -> Config:
 
 
 # --- Config tests ---
+
 
 def test_option_d_config_fields():
     c = Config()
@@ -64,6 +63,7 @@ def test_option_g_config_fields():
 
 
 # --- Eval runner tests (offline stubs) ---
+
 
 async def test_option_d_offline_leaks_everything(sample: Sample):
     """Option D sends plaintext to TEE — outgoing_text = original."""
@@ -99,6 +99,7 @@ async def test_option_g_offline_leaks_nothing(sample: Sample):
 
 
 # --- Pipeline instantiation tests ---
+
 
 def test_option_d_pipeline_instantiation(config: Config):
     p = OptionDPipeline(config=config)

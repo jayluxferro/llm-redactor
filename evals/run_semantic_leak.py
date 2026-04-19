@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 
 from .leak_meter import measure_semantic_leak
-from .runner import read_results, run_workload
+from .runner import run_workload
 from .schema import read_workload as read_samples
 
 WL3_PATH = Path(__file__).parent / "workloads" / "wl3_implicit" / "annotations.jsonl"
@@ -48,11 +48,14 @@ def run_semantic_eval(
         sample = sample_map.get(rr.sample_id)
         if sample is None:
             continue
-        sr = asyncio.run(measure_semantic_leak(
-            sample, rr,
-            ollama_endpoint=ollama_endpoint,
-            ollama_model=ollama_model,
-        ))
+        sr = asyncio.run(
+            measure_semantic_leak(
+                sample,
+                rr,
+                ollama_endpoint=ollama_endpoint,
+                ollama_model=ollama_model,
+            )
+        )
         semantic_results.append(sr)
         status = "LEAK" if sr.still_identifies else "safe"
         print(f"  [{status}] {sr.sample_id}: {sr.judge_rationale[:80]}")
@@ -68,8 +71,11 @@ def run_semantic_eval(
         "semantic_leaks": leaks,
         "semantic_leak_rate": round(rate, 4),
         "details": [
-            {"sample_id": sr.sample_id, "still_identifies": sr.still_identifies,
-             "rationale": sr.judge_rationale}
+            {
+                "sample_id": sr.sample_id,
+                "still_identifies": sr.still_identifies,
+                "rationale": sr.judge_rationale,
+            }
             for sr in semantic_results
         ],
     }
@@ -96,8 +102,10 @@ def main() -> None:
         epsilon=args.epsilon,
     )
 
-    print(f"\nSemantic leak rate: {summary['semantic_leak_rate']:.1%} "
-          f"({summary['semantic_leaks']}/{summary['total_samples']})")
+    print(
+        f"\nSemantic leak rate: {summary['semantic_leak_rate']:.1%} "
+        f"({summary['semantic_leaks']}/{summary['total_samples']})"
+    )
 
     args.output.mkdir(parents=True, exist_ok=True)
     out_path = args.output / f"semantic_{args.option.replace('+', '_').lower()}.json"

@@ -52,9 +52,9 @@ def _yaml_config(c: Corpus) -> tuple[str, list[Annotation]]:
         f"database:\n"
         f"  host: {hostname}\n"
         f"  port: 5432\n"
-        f"  password: \"{db_pass}\"\n"
+        f'  password: "{db_pass}"\n'
         f"api:\n"
-        f"  key: \"{api_key}\"\n"
+        f'  key: "{api_key}"\n'
         f"  timeout: 30\n"
     )
     anns: list[Annotation] = []
@@ -88,12 +88,7 @@ def _docker_compose(c: Corpus) -> tuple[str, list[Annotation]]:
 def _python_config(c: Corpus) -> tuple[str, list[Annotation]]:
     api_key = c.generic_api_key()
     token = c.bearer_token()
-    text = (
-        f'import os\n\n'
-        f'API_KEY = "{api_key}"\n'
-        f'AUTH_TOKEN = "Bearer {token}"\n'
-        f'DEBUG = False\n'
-    )
+    text = f'import os\n\nAPI_KEY = "{api_key}"\nAUTH_TOKEN = "Bearer {token}"\nDEBUG = False\n'
     anns: list[Annotation] = []
     _track(text, api_key, "api_key", anns)
     _track(text, token, "bearer_token", anns)
@@ -107,7 +102,7 @@ def _curl_command(c: Corpus) -> tuple[str, list[Annotation]]:
         f"curl -X POST https://{hostname}/api/v1/data \\\n"
         f"  -H 'Authorization: Bearer {token}' \\\n"
         f"  -H 'Content-Type: application/json' \\\n"
-        f"  -d '{{\"query\": \"SELECT * FROM users\"}}'"
+        f'  -d \'{{"query": "SELECT * FROM users"}}\''
     )
     anns: list[Annotation] = []
     _track(text, token, "bearer_token", anns)
@@ -137,10 +132,10 @@ def _terraform_vars(c: Corpus) -> tuple[str, list[Annotation]]:
     text = (
         f'variable "aws_access_key" {{\n'
         f'  default = "{aws_key}"\n'
-        f'}}\n\n'
+        f"}}\n\n"
         f'variable "aws_secret_key" {{\n'
         f'  default = "{aws_secret}"\n'
-        f'}}\n'
+        f"}}\n"
     )
     anns: list[Annotation] = []
     _track(text, aws_key, "aws_access_key", anns)
@@ -153,13 +148,13 @@ def _json_config(c: Corpus) -> tuple[str, list[Annotation]]:
     db_pass = c.password()
     hostname = c.hostname()
     text = (
-        f'{{\n'
+        f"{{\n"
         f'  "database": {{\n'
         f'    "host": "{hostname}",\n'
         f'    "password": "{db_pass}"\n'
-        f'  }},\n'
+        f"  }},\n"
         f'  "api_key": "{api_key}"\n'
-        f'}}'
+        f"}}"
     )
     anns: list[Annotation] = []
     _track(text, api_key, "api_key", anns)

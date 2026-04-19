@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .config import Config, load_config
+from .observability import configure_logging
 
 app = typer.Typer(name="llm-redactor", no_args_is_help=True)
 console = Console()
@@ -39,6 +40,7 @@ def serve(
     cfg.transport.http_port = port
     _apply_detection_config(cfg)
     configure(cfg)
+    configure_logging()
 
     console.print(f"[bold]llm-redactor[/bold] proxy on port {port}")
     uvicorn.run(

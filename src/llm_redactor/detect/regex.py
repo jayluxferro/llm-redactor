@@ -16,21 +16,13 @@ from .types import Span
 # ---------------------------------------------------------------------------
 
 PATTERNS: dict[str, re.Pattern[str]] = {
-
     # ── PII ──────────────────────────────────────────────────────────────
-
-    "email": re.compile(
-        r"\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b"
-    ),
-    "phone_us": re.compile(
-        r"(?<!\d)(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}(?!\d)"
-    ),
+    "email": re.compile(r"\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b"),
+    "phone_us": re.compile(r"(?<!\d)(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}(?!\d)"),
     "phone_intl": re.compile(
         r"\+\d{1,3}[-.\s]?\d{1,4}[-.\s]?\d{2,4}[-.\s]?\d{2,4}(?:[-.\s]?\d{1,4})?"
     ),
-    "ssn": re.compile(
-        r"\b\d{3}-\d{2}-\d{4}\b"
-    ),
+    "ssn": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
     "ip_v4": re.compile(
         r"\b(?:25[0-5]|2[0-4]\d|[01]?\d\d?)(?:\.(?:25[0-5]|2[0-4]\d|[01]?\d\d?)){3}\b"
     ),
@@ -44,24 +36,16 @@ PATTERNS: dict[str, re.Pattern[str]] = {
         r"\b(?:4\d{3}|5[1-5]\d{2}|3[47]\d{2}|6(?:011|5\d{2}))"
         r"[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{1,4}\b"
     ),
-    "employee_id": re.compile(
-        r"\bEMP-\d{4,6}\b"
-    ),
-
+    "employee_id": re.compile(r"\bEMP-\d{4,6}\b"),
     # ── Passwords & secrets in assignments ────────────────────────────────
-
-    "password": re.compile(
-        r"(?i)(?:password|passwd|pwd|pass)[\s]*[=:]\s*['\"]?(\S{4,})['\"]?"
-    ),
+    "password": re.compile(r"(?i)(?:password|passwd|pwd|pass)[\s]*[=:]\s*['\"]?(\S{4,})['\"]?"),
     "secret_assignment": re.compile(
         r"(?i)(?:secret|token|credential|auth)[\s]*[=:]\s*['\"]?([A-Za-z0-9\-_.+/=]{8,})['\"]?"
     ),
     "connection_string": re.compile(
         r"(?i)(?:mongodb(?:\+srv)?|postgres(?:ql)?|mysql|redis|amqp|mssql)://[^\s'\"]{10,}"
     ),
-
     # ── Cloud provider keys ───────────────────────────────────────────────
-
     # AWS
     "aws_access_key": re.compile(
         r"\b(?:A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}\b"
@@ -73,15 +57,9 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     "aws_session_token": re.compile(
         r"(?i)aws[_\-]?session[_\-]?token[\s]*[=:]\s*['\"]?([A-Za-z0-9/+=]{100,})['\"]?"
     ),
-
     # GCP
-    "gcp_service_account": re.compile(
-        r"\b[a-z0-9\-]+@[a-z0-9\-]+\.iam\.gserviceaccount\.com\b"
-    ),
-    "gcp_api_key": re.compile(
-        r"\bAIza[0-9A-Za-z\-_]{35}\b"
-    ),
-
+    "gcp_service_account": re.compile(r"\b[a-z0-9\-]+@[a-z0-9\-]+\.iam\.gserviceaccount\.com\b"),
+    "gcp_api_key": re.compile(r"\bAIza[0-9A-Za-z\-_]{35}\b"),
     # Azure
     "azure_storage_key": re.compile(
         r"(?i)(?:account[_\-]?key|storage[_\-]?key)[\s]*[=:]\s*['\"]?([A-Za-z0-9+/=]{88})['\"]?"
@@ -89,76 +67,38 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     "azure_connection_string": re.compile(
         r"(?i)DefaultEndpointsProtocol=https?;AccountName=[^;]+;AccountKey=[A-Za-z0-9+/=]{88}"
     ),
-
     # ── API keys by vendor ────────────────────────────────────────────────
-
-    "openai_api_key": re.compile(
-        r"\bsk-(?:proj-)?[a-zA-Z0-9\-_]{20,}\b"
-    ),
-    "anthropic_api_key": re.compile(
-        r"\bsk-ant-(?:api03-)?[a-zA-Z0-9\-_]{20,}\b"
-    ),
-    "github_token": re.compile(
-        r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b"
-    ),
-    "gitlab_token": re.compile(
-        r"\bgl(?:pat|ptt|dt|rt|at)-[A-Za-z0-9\-_]{20,}\b"
-    ),
-    "slack_token": re.compile(
-        r"\bxox[baprs]-[0-9A-Za-z\-]{10,}\b"
-    ),
+    "openai_api_key": re.compile(r"\bsk-(?:proj-)?[a-zA-Z0-9\-_]{20,}\b"),
+    "anthropic_api_key": re.compile(r"\bsk-ant-(?:api03-)?[a-zA-Z0-9\-_]{20,}\b"),
+    "github_token": re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b"),
+    "gitlab_token": re.compile(r"\bgl(?:pat|ptt|dt|rt|at)-[A-Za-z0-9\-_]{20,}\b"),
+    "slack_token": re.compile(r"\bxox[baprs]-[0-9A-Za-z\-]{10,}\b"),
     "slack_webhook": re.compile(
         r"https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+"
     ),
-    "stripe_key": re.compile(
-        r"\b[sr]k_(?:live|test)_[0-9a-zA-Z]{24,}\b"
-    ),
-    "twilio_key": re.compile(
-        r"\bSK[0-9a-fA-F]{32}\b"
-    ),
-    "sendgrid_key": re.compile(
-        r"\bSG\.[A-Za-z0-9\-_]{22,}\.[A-Za-z0-9\-_]{20,}\b"
-    ),
-    "mailgun_key": re.compile(
-        r"\bkey-[0-9a-zA-Z]{32}\b"
-    ),
-    "npm_token": re.compile(
-        r"\bnpm_[A-Za-z0-9]{36}\b"
-    ),
-    "pypi_token": re.compile(
-        r"\bpypi-[A-Za-z0-9\-_]{50,}\b"
-    ),
+    "stripe_key": re.compile(r"\b[sr]k_(?:live|test)_[0-9a-zA-Z]{24,}\b"),
+    "twilio_key": re.compile(r"\bSK[0-9a-fA-F]{32}\b"),
+    "sendgrid_key": re.compile(r"\bSG\.[A-Za-z0-9\-_]{22,}\.[A-Za-z0-9\-_]{20,}\b"),
+    "mailgun_key": re.compile(r"\bkey-[0-9a-zA-Z]{32}\b"),
+    "npm_token": re.compile(r"\bnpm_[A-Za-z0-9]{36}\b"),
+    "pypi_token": re.compile(r"\bpypi-[A-Za-z0-9\-_]{50,}\b"),
     "heroku_api_key": re.compile(
         r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
     ),
-
     # ── Generic patterns ──────────────────────────────────────────────────
-
     "generic_api_key": re.compile(
         r"(?i)(?:api[_\-]?key|apikey|secret[_\-]?key|access[_\-]?token|auth[_\-]?token)"
         r"[\s]*[=:]\s*['\"]?([A-Za-z0-9\-_.+/=]{16,})['\"]?"
     ),
-    "bearer_token": re.compile(
-        r"(?i)bearer\s+[A-Za-z0-9\-_.~+/]{20,}=*"
-    ),
-    "basic_auth": re.compile(
-        r"(?i)basic\s+[A-Za-z0-9+/]{20,}={0,2}"
-    ),
-    "jwt": re.compile(
-        r"\beyJ[A-Za-z0-9\-_]+\.eyJ[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_.+/=]+\b"
-    ),
+    "bearer_token": re.compile(r"(?i)bearer\s+[A-Za-z0-9\-_.~+/]{20,}=*"),
+    "basic_auth": re.compile(r"(?i)basic\s+[A-Za-z0-9+/]{20,}={0,2}"),
+    "jwt": re.compile(r"\beyJ[A-Za-z0-9\-_]+\.eyJ[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_.+/=]+\b"),
     "private_key_pem": re.compile(
         r"-----BEGIN (?:RSA |EC |DSA |ED25519 |ENCRYPTED )?PRIVATE KEY-----"
     ),
-    "ssh_private_key": re.compile(
-        r"-----BEGIN OPENSSH PRIVATE KEY-----"
-    ),
-    "pgp_private_key": re.compile(
-        r"-----BEGIN PGP PRIVATE KEY BLOCK-----"
-    ),
-
+    "ssh_private_key": re.compile(r"-----BEGIN OPENSSH PRIVATE KEY-----"),
+    "pgp_private_key": re.compile(r"-----BEGIN PGP PRIVATE KEY BLOCK-----"),
     # ── Hostnames ─────────────────────────────────────────────────────────
-
     "hostname_internal": re.compile(
         r"\b[a-z][a-z0-9\-]+\.(?:internal|local|corp|lan|intranet|private|staging|dev)\b"
     ),

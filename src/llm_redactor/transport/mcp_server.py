@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import uuid
+from collections import OrderedDict
 from typing import Any
 
 import httpx
@@ -27,6 +29,8 @@ from mcp.types import TextContent, Tool
 
 from ..config import Config, load_config
 from ..detect.orchestrator import detect_all, detect_all_validated
+from ..detect.types import Span
+from ..observability import log_event
 from ..redact.placeholder import redact
 from ..redact.restore import restore
 
@@ -35,8 +39,47 @@ _config: Config | None = None
 _stats: dict[str, int] = {"requests": 0, "detections": 0, "restores": 0, "llm_calls": 0}
 
 # In-memory reverse map store, keyed by session_id.
-# Each scrub creates a session; restore consumes it.
-_sessions: dict[str, dict[str, str]] = {}
+# Each scrub creates a session; restore consumes it. Bounded LRU-style eviction.
+_sessions: OrderedDict[str, dict[str, str]] = OrderedDict()
+
+
+def _session_cap() -> int:
+    return _config.transport.mcp_session_cap if _config else 2000
+
+
+def _remember_session(session_id: str, reverse_map: dict[str, str]) -> None:
+    _sessions[session_id] = reverse_map
+    _sessions.move_to_end(session_id)
+    cap = _session_cap()
+    while len(_sessions) > cap:
+        dropped, _ = _sessions.popitem(last=False)
+        log_event("mcp_session_evicted", session_id_prefix=dropped[:8], cap=cap)
+
+
+async def _detect_text(
+    text: str,
+    *,
+    use_ner: bool,
+    use_llm_validation: bool | None = None,
+) -> list[Span]:
+    """Resolve detection path from config and optional per-call override."""
+    global _config
+    if _config is None:
+        _config = load_config()
+    do_val = (
+        _config.pipeline.llm_validation.enabled
+        if use_llm_validation is None
+        else use_llm_validation
+    )
+    if do_val:
+        model = _config.pipeline.llm_validation.model or _config.local_model.chat_model
+        return await detect_all_validated(
+            text,
+            use_ner=use_ner,
+            ollama_endpoint=_config.local_model.endpoint,
+            ollama_model=model,
+        )
+    return detect_all(text, use_ner=use_ner)
 
 
 @server.list_tools()
@@ -59,7 +102,10 @@ async def list_tools() -> list[Tool]:
                         "items": {
                             "type": "object",
                             "properties": {
-                                "role": {"type": "string", "enum": ["system", "user", "assistant"]},
+                                "role": {
+                                    "type": "string",
+                                    "enum": ["system", "user", "assistant"],
+                                },
                                 "content": {"type": "string"},
                             },
                             "required": ["role", "content"],
@@ -67,7 +113,10 @@ async def list_tools() -> list[Tool]:
                     },
                     "model": {
                         "type": "string",
-                        "description": "Model name (e.g. gpt-4o, claude-sonnet-4-20250514). Optional — uses server default if omitted.",
+                        "description": (
+                            "Model name (e.g. gpt-4o, claude-sonnet-4-20250514). "
+                            "Optional — uses server default if omitted."
+                        ),
                     },
                     "max_tokens": {
                         "type": "integer",
@@ -93,7 +142,17 @@ async def list_tools() -> list[Tool]:
                     },
                     "use_ner": {
                         "type": "boolean",
-                        "description": "Enable Presidio NER for better person/org detection (slower). Default true.",
+                        "description": (
+                            "Enable Presidio NER for better person/org detection (slower). "
+                            "Default true."
+                        ),
+                    },
+                    "use_llm_validation": {
+                        "type": "boolean",
+                        "description": (
+                            "When true, run local Ollama validation on NER spans (adds latency). "
+                            "When omitted, uses pipeline.llm_validation.enabled from server config."
+                        ),
                     },
                 },
                 "required": ["text"],
@@ -130,6 +189,14 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "Text to scan for sensitive content.",
                     },
+                    "use_ner": {
+                        "type": "boolean",
+                        "description": "Enable Presidio NER. Default true.",
+                    },
+                    "use_llm_validation": {
+                        "type": "boolean",
+                        "description": "Optional override: run Ollama validation on NER spans.",
+                    },
                 },
                 "required": ["text"],
             },
@@ -151,7 +218,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     elif name == "redact.restore":
         return _handle_restore(arguments)
     elif name == "redact.detect":
-        return _handle_detect(arguments)
+        return await _handle_detect(arguments)
     elif name == "redact.stats":
         return [TextContent(type="text", text=json.dumps(_stats))]
     else:
@@ -176,23 +243,31 @@ async def _handle_llm_chat(arguments: dict[str, Any]) -> list[TextContent]:
     redacted_messages = []
     total_detections = 0
 
+    ph_tag = secrets.token_hex(4) if _config.pipeline.placeholder_request_tag else None
+
     for msg in messages:
         content = msg.get("content", "")
         if not isinstance(content, str) or not content:
             redacted_messages.append(msg)
             continue
 
-        spans = detect_all(content, use_ner=True)
+        spans = await _detect_text(content, use_ner=True, use_llm_validation=None)
         total_detections += len(spans)
 
         if spans:
-            result = redact(content, spans)
+            result = redact(content, spans, session_tag=ph_tag)
             combined_reverse_map.update(result.reverse_map)
             redacted_messages.append({**msg, "content": result.redacted_text})
         else:
             redacted_messages.append(msg)
 
     _stats["detections"] += total_detections
+    log_event(
+        "mcp_llm_chat_prepared",
+        detections=total_detections,
+        placeholder_tag=bool(ph_tag),
+        llm_validation=_config.pipeline.llm_validation.enabled,
+    )
 
     # Step 2: Forward to cloud LLM.
     endpoint = _config.cloud_target.endpoint
@@ -216,11 +291,18 @@ async def _handle_llm_chat(arguments: dict[str, Any]) -> list[TextContent]:
             resp.raise_for_status()
             cloud_response = resp.json()
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps({
-            "error": f"LLM call failed: {e}",
-            "redacted_messages": redacted_messages,
-            "detections": total_detections,
-        }))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "error": f"LLM call failed: {e}",
+                        "redacted_messages": redacted_messages,
+                        "detections": total_detections,
+                    }
+                ),
+            )
+        ]
 
     # Step 3: Restore placeholders in response.
     response_text = ""
@@ -233,56 +315,88 @@ async def _handle_llm_chat(arguments: dict[str, Any]) -> list[TextContent]:
     else:
         restored_text = response_text
 
-    return [TextContent(type="text", text=json.dumps({
-        "response": restored_text,
-        "model": cloud_response.get("model", model),
-        "detections": total_detections,
-        "placeholders_restored": len(combined_reverse_map) if combined_reverse_map else 0,
-        "usage": cloud_response.get("usage"),
-    }))]
+    return [
+        TextContent(
+            type="text",
+            text=json.dumps(
+                {
+                    "response": restored_text,
+                    "model": cloud_response.get("model", model),
+                    "detections": total_detections,
+                    "placeholders_restored": len(combined_reverse_map)
+                    if combined_reverse_map
+                    else 0,
+                    "usage": cloud_response.get("usage"),
+                }
+            ),
+        )
+    ]
 
 
 async def _handle_scrub(arguments: dict[str, Any]) -> list[TextContent]:
+    global _config
+    if _config is None:
+        _config = load_config()
+
     _stats["requests"] += 1
 
     text = arguments.get("text", "")
     use_ner = arguments.get("use_ner", True)
-
-    # Use LLM validation if configured.
-    if _config and _config.pipeline.llm_validation.enabled:
-        ollama_endpoint = _config.local_model.endpoint
-        ollama_model = _config.pipeline.llm_validation.model or _config.local_model.chat_model
-        spans = await detect_all_validated(
-            text,
-            use_ner=use_ner,
-            ollama_endpoint=ollama_endpoint,
-            ollama_model=ollama_model,
-        )
+    if "use_llm_validation" in arguments:
+        use_val: bool | None = bool(arguments.get("use_llm_validation"))
     else:
-        spans = detect_all(text, use_ner=use_ner)
+        use_val = None
+
+    spans = await _detect_text(text, use_ner=use_ner, use_llm_validation=use_val)
 
     _stats["detections"] += len(spans)
 
     if not spans:
-        return [TextContent(type="text", text=json.dumps({
-            "redacted_text": text,
-            "session_id": None,
-            "detections": 0,
-            "message": "No sensitive content detected. Safe to send as-is.",
-        }))]
-
-    result = redact(text, spans)
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "redacted_text": text,
+                        "session_id": None,
+                        "detections": 0,
+                        "message": "No sensitive content detected. Safe to send as-is.",
+                    }
+                ),
+            )
+        ]
 
     session_id = str(uuid.uuid4())
-    _sessions[session_id] = result.reverse_map
+    short_tag = session_id.replace("-", "")[:8]
+    ph_tag = short_tag if _config.pipeline.placeholder_request_tag else None
+    result = redact(text, spans, session_tag=ph_tag)
 
-    return [TextContent(type="text", text=json.dumps({
-        "redacted_text": result.redacted_text,
-        "session_id": session_id,
-        "detections": len(spans),
-        "detected_kinds": list({s.kind for s in spans}),
-        "message": f"Redacted {len(spans)} sensitive span(s). Use this redacted_text in your LLM call, then pass the response to redact.restore with this session_id.",
-    }))]
+    _remember_session(session_id, result.reverse_map)
+    log_event(
+        "mcp_scrub",
+        detections=len(spans),
+        placeholder_tag=bool(ph_tag),
+        llm_validation=use_val if use_val is not None else _config.pipeline.llm_validation.enabled,
+    )
+
+    return [
+        TextContent(
+            type="text",
+            text=json.dumps(
+                {
+                    "redacted_text": result.redacted_text,
+                    "session_id": session_id,
+                    "detections": len(spans),
+                    "detected_kinds": list({s.kind for s in spans}),
+                    "message": (
+                        f"Redacted {len(spans)} sensitive span(s). Use this redacted_text in "
+                        "your LLM call, then pass the response to redact.restore with this "
+                        "session_id."
+                    ),
+                }
+            ),
+        )
+    ]
 
 
 def _handle_restore(arguments: dict[str, Any]) -> list[TextContent]:
@@ -290,38 +404,71 @@ def _handle_restore(arguments: dict[str, Any]) -> list[TextContent]:
     session_id = arguments.get("session_id", "")
 
     if not session_id or session_id not in _sessions:
-        return [TextContent(type="text", text=json.dumps({
-            "restored_text": text,
-            "error": "Unknown or expired session_id. Returning text unchanged.",
-        }))]
+        log_event("mcp_restore_miss", session_id_prefix=(session_id or "")[:8])
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "restored_text": text,
+                        "error": "Unknown or expired session_id. Returning text unchanged.",
+                    }
+                ),
+            )
+        ]
 
     reverse_map = _sessions.pop(session_id)  # consume the session
     _stats["restores"] += 1
 
     restored_text = restore(text, reverse_map)
 
-    return [TextContent(type="text", text=json.dumps({
-        "restored_text": restored_text,
-        "placeholders_restored": len(reverse_map),
-    }))]
+    return [
+        TextContent(
+            type="text",
+            text=json.dumps(
+                {
+                    "restored_text": restored_text,
+                    "placeholders_restored": len(reverse_map),
+                }
+            ),
+        )
+    ]
 
 
-def _handle_detect(arguments: dict[str, Any]) -> list[TextContent]:
+async def _handle_detect(arguments: dict[str, Any]) -> list[TextContent]:
+    global _config
+    if _config is None:
+        _config = load_config()
+
     text = arguments.get("text", "")
-    spans = detect_all(text, use_ner=True)
-    return [TextContent(type="text", text=json.dumps({
-        "spans": [
-            {
-                "start": s.start,
-                "end": s.end,
-                "kind": s.kind,
-                "confidence": s.confidence,
-                "text": s.text,
-                "source": s.source,
-            }
-            for s in spans
-        ],
-    }))]
+    use_ner = arguments.get("use_ner", True)
+    if "use_llm_validation" in arguments:
+        use_val: bool | None = bool(arguments.get("use_llm_validation"))
+    else:
+        use_val = None
+
+    spans = await _detect_text(text, use_ner=use_ner, use_llm_validation=use_val)
+    log_event("mcp_detect", span_count=len(spans))
+    return [
+        TextContent(
+            type="text",
+            text=json.dumps(
+                {
+                    "spans": [
+                        {
+                            "start": s.start,
+                            "end": s.end,
+                            "kind": s.kind,
+                            "confidence": s.confidence,
+                            "text": s.text,
+                            "source": s.source,
+                        }
+                        for s in spans
+                    ],
+                }
+            ),
+        )
+    ]
 
 
 async def run_mcp(config: Config | None = None) -> None:
@@ -329,6 +476,12 @@ async def run_mcp(config: Config | None = None) -> None:
     global _config
     if config:
         _config = config
+    if _config is None:
+        _config = load_config()
+
+    from ..observability import configure_logging
+
+    configure_logging()
 
     async with stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())

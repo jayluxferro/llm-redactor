@@ -65,13 +65,7 @@ def _employee_record(c: Corpus) -> tuple[str, list[Annotation]]:
     email = c.email(name)
     phone = c.phone_us()
     addr = c.address_us()
-    text = (
-        f"Employee: {name}\n"
-        f"ID: {emp_id}\n"
-        f"Email: {email}\n"
-        f"Phone: {phone}\n"
-        f"Address: {addr}"
-    )
+    text = f"Employee: {name}\nID: {emp_id}\nEmail: {email}\nPhone: {phone}\nAddress: {addr}"
     anns: list[Annotation] = []
     _track(text, name, "person", anns)
     _track(text, emp_id, "employee_id", anns)
@@ -86,8 +80,7 @@ def _support_ticket(c: Corpus) -> tuple[str, list[Annotation]]:
     email = c.email(name)
     company = c.company()
     text = (
-        f"Ticket from {name} ({email}) at {company}: "
-        f"\"I can't access my dashboard. Please help.\""
+        f'Ticket from {name} ({email}) at {company}: "I can\'t access my dashboard. Please help."'
     )
     anns: list[Annotation] = []
     _track(text, name, "person", anns)
@@ -149,10 +142,7 @@ def _shipping_label(c: Corpus) -> tuple[str, list[Annotation]]:
     name = c.full_name()
     addr = c.address_us()
     phone = c.phone_us()
-    text = (
-        f"Ship to:\n{name}\n{addr}\nPhone: {phone}\n"
-        f"Deliver by end of week. Signature required."
-    )
+    text = f"Ship to:\n{name}\n{addr}\nPhone: {phone}\nDeliver by end of week. Signature required."
     anns: list[Annotation] = []
     _track(text, name, "person", anns)
     _track(text, addr, "address", anns)
@@ -231,28 +221,6 @@ def _database_query_help(c: Corpus) -> tuple[str, list[Annotation]]:
 
 
 def _phone_directory(c: Corpus) -> tuple[str, list[Annotation]]:
-    lines = ["Internal phone directory:\n"]
-    anns: list[Annotation] = []
-    for _ in range(4):
-        name = c.full_name()
-        phone = c.phone_us()
-        line = f"  {name}: {phone}\n"
-        lines.append(line)
-    text = "".join(lines)
-    for _ in range(4):
-        pass  # need to re-track
-    # Re-parse by building line by line with tracking
-    lines2 = ["Internal phone directory:\n"]
-    anns2: list[Annotation] = []
-    c2 = Corpus(seed=c.rng.randint(0, 100000))
-    for _ in range(4):
-        name = c2.full_name()
-        phone = c2.phone_us()
-        line = f"  {name}: {phone}\n"
-        lines2.append(line)
-    text = "".join(lines2)
-    _track(text, name, "person", anns2)  # only gets the last one
-    # Rebuild properly
     return _phone_directory_proper(c)
 
 

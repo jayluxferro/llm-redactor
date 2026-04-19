@@ -35,11 +35,13 @@ class OptionFPipeline:
 
     config: Config
     sensitivity_threshold: float = 0.5
-    _stats: dict[str, int] = field(default_factory=lambda: {
-        "requests": 0,
-        "classified_sensitive": 0,
-        "classified_non_sensitive": 0,
-    })
+    _stats: dict[str, int] = field(
+        default_factory=lambda: {
+            "requests": 0,
+            "classified_sensitive": 0,
+            "classified_non_sensitive": 0,
+        }
+    )
 
     @property
     def stats(self) -> dict[str, int]:
@@ -50,11 +52,7 @@ class OptionFPipeline:
         self._stats["requests"] += 1
 
         messages = body.get("messages", [])
-        text = " ".join(
-            m.get("content", "")
-            for m in messages
-            if isinstance(m.get("content"), str)
-        )
+        text = " ".join(m.get("content", "") for m in messages if isinstance(m.get("content"), str))
 
         result = await fhe_classify_stub(
             text,
@@ -74,9 +72,7 @@ class OptionFPipeline:
                 "ciphertext_sent": True,
                 "prediction": result.prediction,
                 "fhe_latency_ms": (
-                    result.encryption_time_ms
-                    + result.inference_time_ms
-                    + result.decryption_time_ms
+                    result.encryption_time_ms + result.inference_time_ms + result.decryption_time_ms
                 ),
             },
         )

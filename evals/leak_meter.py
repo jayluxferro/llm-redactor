@@ -16,8 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .runner import RunResult
-from .schema import Annotation, Sample, read_workload
-
+from .schema import Sample, read_workload
 
 MIN_PARTIAL_LEN = 4  # minimum substring length for partial leak
 
@@ -64,12 +63,14 @@ def measure_leaks(
         if partial and not exact:
             partial_leaks += 1
 
-        details.append({
-            "kind": ann.kind,
-            "text": ann.text,
-            "exact_leak": exact,
-            "partial_leak": partial,
-        })
+        details.append(
+            {
+                "kind": ann.kind,
+                "text": ann.text,
+                "exact_leak": exact,
+                "partial_leak": partial,
+            }
+        )
 
     total = len(sample.annotations)
     exact_rate = exact_leaks / total if total else 0.0
@@ -138,9 +139,7 @@ async def measure_semantic_leak(
     """
     import httpx
 
-    annotations_desc = "; ".join(
-        f"{a.kind}: {a.text}" for a in sample.annotations
-    )
+    annotations_desc = "; ".join(f"{a.kind}: {a.text}" for a in sample.annotations)
 
     prompt = (
         f"Original text describes these sensitive entities: {annotations_desc}\n\n"

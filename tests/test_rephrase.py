@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from llm_redactor.rephrase.validator import (
-    ValidationResult,
     extract_technical_terms,
     validate_rephrase,
 )

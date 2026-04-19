@@ -96,31 +96,48 @@ def run_utility_eval(
 
         print(f"  Getting responses for {rr.sample_id}...")
         try:
-            baseline_resp, redacted_resp = asyncio.run(run_online_pair(
-                sample.text,
-                rr.outgoing_text,
-                endpoint=cloud_endpoint,
-                model=cloud_model,
-            ))
+            baseline_resp, redacted_resp = asyncio.run(
+                run_online_pair(
+                    sample.text,
+                    rr.outgoing_text,
+                    endpoint=cloud_endpoint,
+                    model=cloud_model,
+                )
+            )
         except Exception as e:
             print(f"    Error: {e}")
             continue
 
         restored = restore(redacted_resp, rr.reverse_map) if rr.reverse_map else redacted_resp
 
-        baseline_results.append(RunResult(
-            sample_id=rr.sample_id, option="baseline",
-            original_text=sample.text, outgoing_text=sample.text,
-            response_text=baseline_resp, restored_text=baseline_resp,
-            detections=[], reverse_map={}, latency_ms=0, mode="online",
-        ))
-        redacted_results.append(RunResult(
-            sample_id=rr.sample_id, option=rr.option,
-            original_text=sample.text, outgoing_text=rr.outgoing_text,
-            response_text=redacted_resp, restored_text=restored,
-            detections=rr.detections, reverse_map=rr.reverse_map,
-            latency_ms=rr.latency_ms, mode="online",
-        ))
+        baseline_results.append(
+            RunResult(
+                sample_id=rr.sample_id,
+                option="baseline",
+                original_text=sample.text,
+                outgoing_text=sample.text,
+                response_text=baseline_resp,
+                restored_text=baseline_resp,
+                detections=[],
+                reverse_map={},
+                latency_ms=0,
+                mode="online",
+            )
+        )
+        redacted_results.append(
+            RunResult(
+                sample_id=rr.sample_id,
+                option=rr.option,
+                original_text=sample.text,
+                outgoing_text=rr.outgoing_text,
+                response_text=redacted_resp,
+                restored_text=restored,
+                detections=rr.detections,
+                reverse_map=rr.reverse_map,
+                latency_ms=rr.latency_ms,
+                mode="online",
+            )
+        )
 
     if not baseline_results:
         return {"error": "No results collected"}
@@ -133,12 +150,14 @@ def run_utility_eval(
         api_format="openai",
     )
 
-    summary = asyncio.run(measure_workload_utility(
-        workload_name,
-        baseline_results,
-        redacted_results,
-        judge_config,
-    ))
+    summary = asyncio.run(
+        measure_workload_utility(
+            workload_name,
+            baseline_results,
+            redacted_results,
+            judge_config,
+        )
+    )
 
     return {
         "workload": workload_name,
@@ -154,7 +173,12 @@ def run_utility_eval(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Online utility evaluation")
-    parser.add_argument("--workload", "-w", default="wl1_pii", choices=["wl1_pii", "wl2_secrets", "wl3_implicit", "wl4_code"])
+    parser.add_argument(
+        "--workload",
+        "-w",
+        default="wl1_pii",
+        choices=["wl1_pii", "wl2_secrets", "wl3_implicit", "wl4_code"],
+    )
     parser.add_argument("--option", default="B", choices=["B", "B+C", "B+H", "B+D", "A+B", "A+B+C"])
     parser.add_argument("--use-ner", action="store_true", default=True)
     parser.add_argument("--max-samples", type=int, default=10)
@@ -167,7 +191,8 @@ def main() -> None:
 
     print(f"Running utility eval: {args.option} on {args.workload} ({args.max_samples} samples)")
     summary = run_utility_eval(
-        args.workload, args.option,
+        args.workload,
+        args.option,
         use_ner=args.use_ner,
         max_samples=args.max_samples,
         cloud_endpoint=args.cloud_endpoint,
@@ -179,7 +204,7 @@ def main() -> None:
     print(f"\nResults: {json.dumps(summary, indent=2)}")
 
     args.output.mkdir(parents=True, exist_ok=True)
-    out = args.output / f"utility_{args.option.replace('+','_').lower()}_{args.workload}.json"
+    out = args.output / f"utility_{args.option.replace('+', '_').lower()}_{args.workload}.json"
     with open(out, "w") as f:
         json.dump(summary, f, indent=2)
     print(f"Written to {out}")

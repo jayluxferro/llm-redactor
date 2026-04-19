@@ -69,8 +69,8 @@ These are research-stage and gated off by default.
 
 Two parallel interfaces:
 
-1. **MCP server (stdio)** — `redact.transform`, `redact.detect`,
-   `redact.stats`.
+1. **MCP server (stdio)** — `llm.chat`, `redact.scrub`, `redact.restore`,
+   `redact.detect`, `redact.stats`.
 2. **HTTP proxy** (`POST /v1/chat/completions`) — OpenAI-compatible.
    Points `OPENAI_API_BASE` at `http://localhost:<port>` and the
    agent's cloud calls transparently go through the redactor.
@@ -83,16 +83,18 @@ Two parallel interfaces:
   from `resilient-write`).
 - `ner.py` — `presidio` or a small local NER model for
   PII detection.
-- `classifier.py` — local LM classifier for semantic "is this
-  sensitive" questions the regex misses.
+- `llm_validator.py` — optional local LLM (Ollama) batch validation of
+  NER spans to drop false positives; enabled via `pipeline.llm_validation`.
 
-Detectors emit `Span(start, end, kind, confidence, suggestion)`
+Detectors emit `Span(start, end, kind, confidence, source, text)`
 records.
 
 ### 2. Redactor (`src/llm_redactor/redact/`)
 
-- `placeholder.py` — generates typed, stable placeholders
-  (`{PERSON_1}`, `{EMAIL_2}`, `{API_KEY_3}`).
+- `placeholder.py` — generates typed, stable placeholders using Unicode
+  angle brackets (for example `⟨EMAIL_1⟩`). Optional per-request tag
+  (`pipeline.placeholder_request_tag`) embeds random bytes so accidental
+  collisions with user text are rarer (`⟨EMAIL_1·a1b2c3d⟩`).
 - `restore.py` — the reverse map; stores original → placeholder and
   replaces placeholder → original in the response.
 - The reverse map lives **only in the process memory** for the
@@ -137,12 +139,14 @@ transport:
   mcp: true
   http: true
   http_port: 7789
+  tools_policy: bypass   # bypass | refuse — tool/function payloads skip redaction
+  mcp_session_cap: 2000  # MCP scrub sessions; LRU eviction when full
 
 local_model:
   backend: ollama
   endpoint: http://127.0.0.1:11434
   chat_model: llama3.2:3b
-  ner_model: null      # null = use presidio defaults
+  ner_model: null      # null = Presidio default; e.g. xx_ent_wiki_sm for multilingual
 
 cloud_target:
   backend: openai_compat
@@ -150,6 +154,8 @@ cloud_target:
   api_key_env: OPENAI_API_KEY
 
 pipeline:
+  llm_validation:      { enabled: false, model: "" }  # Ollama validation of NER spans
+  placeholder_request_tag: false  # random tag inside each placeholder per HTTP/MCP call
   opt_a_local_only:    { enabled: false }  # opt-in for privacy-max mode
   opt_b_redact:        { enabled: true, strict: true }
   opt_c_rephrase:      { enabled: false, require_validator_pass: true }

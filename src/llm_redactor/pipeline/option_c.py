@@ -40,12 +40,14 @@ class OptionCPipeline:
 
     config: Config
     use_ner: bool = True
-    _stats: dict[str, int] = field(default_factory=lambda: {
-        "requests": 0,
-        "detections": 0,
-        "rephrases": 0,
-        "rephrase_rollbacks": 0,
-    })
+    _stats: dict[str, int] = field(
+        default_factory=lambda: {
+            "requests": 0,
+            "detections": 0,
+            "rephrases": 0,
+            "rephrase_rollbacks": 0,
+        }
+    )
 
     @property
     def stats(self) -> dict[str, int]:
@@ -76,8 +78,8 @@ class OptionCPipeline:
 
         # Build B-redacted messages.
         b_messages = list(messages)
-        for i, rr in redaction_results.items():
-            b_messages[i] = {**messages[i], "content": rr.redacted_text}
+        for i, red_res in redaction_results.items():
+            b_messages[i] = {**messages[i], "content": red_res.redacted_text}
 
         # Stage 2: Rephrase each user message (Option C).
         rephrase_result: RephraseResult | None = None
@@ -96,20 +98,20 @@ class OptionCPipeline:
                 continue
 
             self._stats["rephrases"] += 1
-            rr = await rephrase(
+            reph_res = await rephrase(
                 content,
                 endpoint=ollama_endpoint,
                 model=ollama_model,
             )
-            rephrase_result = rr
+            rephrase_result = reph_res
 
             # Stage 3: Validate the rephrase.
             require_pass = self.config.pipeline.opt_c_rephrase.require_validator_pass
-            vr = validate_rephrase(content, rr.rephrased_text)
+            vr = validate_rephrase(content, reph_res.rephrased_text)
             validation = vr
 
             if vr.valid or not require_pass:
-                c_messages[i] = {**msg, "content": rr.rephrased_text}
+                c_messages[i] = {**msg, "content": reph_res.rephrased_text}
                 rephrase_used = True
             else:
                 # Rollback: keep B-only redaction for this message.

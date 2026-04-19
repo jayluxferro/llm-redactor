@@ -1,0 +1,25 @@
+# Example: stricter proxy/MCP posture (review latency impact before production).
+version: 1
+
+local_model:
+  backend: ollama
+  endpoint: http://127.0.0.1:11434
+  chat_model: llama3.2:3b
+  # ner_model: xx_ent_wiki_sm   # optional multilingual NER (install model weights)
+
+pipeline:
+  llm_validation:
+    enabled: true
+    model: ""   # empty = local_model.chat_model
+  placeholder_request_tag: true
+  opt_b_redact:
+    enabled: true
+    strict: false
+
+transport:
+  tools_policy: refuse   # or bypass to allow tools without redaction
+  mcp_session_cap: 2000
+
+cloud_target:
+  endpoint: https://api.openai.com/v1
+  api_key_env: OPENAI_API_KEY

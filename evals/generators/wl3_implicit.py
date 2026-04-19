@@ -64,10 +64,7 @@ def _team_shipped(c: Corpus) -> tuple[str, list[Annotation]]:
 def _only_female_engineer(c: Corpus) -> tuple[str, list[Annotation]]:
     team = c.team_name()
     phrase = f"the only female engineer on the {team} team"
-    text = (
-        f"I heard {phrase} is leaving. "
-        f"Can you check who was on-call last Friday?"
-    )
+    text = f"I heard {phrase} is leaving. Can you check who was on-call last Friday?"
     anns: list[Annotation] = []
     _track(text, phrase, "implicit", anns)
     return text, anns
@@ -76,10 +73,7 @@ def _only_female_engineer(c: Corpus) -> tuple[str, list[Annotation]]:
 def _new_hire_corner(c: Corpus) -> tuple[str, list[Annotation]]:
     company = c.company()
     phrase = f"the new hire who sits in the corner office at {company}"
-    text = (
-        f"Please onboard {phrase}. "
-        f"They need VPN access and a hardware token."
-    )
+    text = f"Please onboard {phrase}. They need VPN access and a hardware token."
     anns: list[Annotation] = []
     _track(text, phrase, "implicit", anns)
     return text, anns
@@ -97,10 +91,7 @@ def _ceo_keynote(c: Corpus) -> tuple[str, list[Annotation]]:
 def _fired_last_month(c: Corpus) -> tuple[str, list[Annotation]]:
     team = c.team_name()
     phrase = f"the person who was let go from {team} last month"
-    text = (
-        f"Make sure {phrase} no longer has access to "
-        f"the staging environment."
-    )
+    text = f"Make sure {phrase} no longer has access to the staging environment."
     anns: list[Annotation] = []
     _track(text, phrase, "implicit", anns)
     return text, anns
@@ -108,7 +99,7 @@ def _fired_last_month(c: Corpus) -> tuple[str, list[Annotation]]:
 
 def _client_largest(c: Corpus) -> tuple[str, list[Annotation]]:
     company = c.company()
-    phrase = f"our largest enterprise client in the healthcare vertical"
+    phrase = "our largest enterprise client in the healthcare vertical"
     text = (
         f"Prepare the renewal proposal for {phrase}. "
         f"They're based in Boston and have been with {company} since 2022."
@@ -134,10 +125,7 @@ def _intern_broke_prod(c: Corpus) -> tuple[str, list[Annotation]]:
 def _competitor_acquisition(c: Corpus) -> tuple[str, list[Annotation]]:
     company = c.company()
     phrase = f"the startup {company} acquired last quarter"
-    text = (
-        f"Integrate the API from {phrase}. "
-        f"Their docs are at an internal wiki page."
-    )
+    text = f"Integrate the API from {phrase}. Their docs are at an internal wiki page."
     anns: list[Annotation] = []
     _track(text, phrase, "implicit", anns)
     return text, anns
@@ -158,9 +146,7 @@ def _whistleblower(c: Corpus) -> tuple[str, list[Annotation]]:
 def _board_member_daughter(c: Corpus) -> tuple[str, list[Annotation]]:
     company = c.company()
     phrase = f"the board member whose daughter interned at {company} last summer"
-    text = (
-        f"We need to disclose the conflict of interest involving {phrase}."
-    )
+    text = f"We need to disclose the conflict of interest involving {phrase}."
     anns: list[Annotation] = []
     _track(text, phrase, "implicit", anns)
     return text, anns
@@ -182,10 +168,7 @@ def _internal_product_name(c: Corpus) -> tuple[str, list[Annotation]]:
     project = c.project_name()
     company = c.company()
     phrase = f"{company}'s internal codename {project}"
-    text = (
-        f"Help me debug a race condition in {phrase}. "
-        f"The scheduler keeps double-firing."
-    )
+    text = f"Help me debug a race condition in {phrase}. The scheduler keeps double-firing."
     anns: list[Annotation] = []
     _track(text, phrase, "implicit", anns)
     return text, anns
@@ -194,10 +177,7 @@ def _internal_product_name(c: Corpus) -> tuple[str, list[Annotation]]:
 def _salary_band(c: Corpus) -> tuple[str, list[Annotation]]:
     team = c.team_name()
     phrase = f"the senior engineer on {team} who negotiated above-band compensation"
-    text = (
-        f"Document {phrase}. "
-        f"HR needs the exception recorded for the annual comp review."
-    )
+    text = f"Document {phrase}. HR needs the exception recorded for the annual comp review."
     anns: list[Annotation] = []
     _track(text, phrase, "implicit", anns)
     return text, anns
@@ -218,10 +198,7 @@ def _departing_cofounder(c: Corpus) -> tuple[str, list[Annotation]]:
 def _vendor_poc(c: Corpus) -> tuple[str, list[Annotation]]:
     company = c.company()
     phrase = f"the point of contact at {company} who handles our billing disputes"
-    text = (
-        f"Escalate the invoice discrepancy to {phrase}. "
-        f"Reference PO number 4821."
-    )
+    text = f"Escalate the invoice discrepancy to {phrase}. Reference PO number 4821."
     anns: list[Annotation] = []
     _track(text, phrase, "implicit", anns)
     return text, anns
@@ -231,10 +208,7 @@ def _researcher_preprint(c: Corpus) -> tuple[str, list[Annotation]]:
     company = c.company()
     team = c.team_name()
     phrase = f"the {team} researcher at {company} whose preprint was retracted"
-    text = (
-        f"Check whether {phrase} updated the internal dataset "
-        f"with the corrected methodology."
-    )
+    text = f"Check whether {phrase} updated the internal dataset with the corrected methodology."
     anns: list[Annotation] = []
     _track(text, phrase, "implicit", anns)
     return text, anns
@@ -267,9 +241,7 @@ def _location_identifier(c: Corpus) -> tuple[str, list[Annotation]]:
 def _family_relationship(c: Corpus) -> tuple[str, list[Annotation]]:
     company = c.company()
     phrase = f"the VP of Engineering whose brother-in-law runs {company}'s main competitor"
-    text = (
-        f"Flag the conflict-of-interest form for {phrase}."
-    )
+    text = f"Flag the conflict-of-interest form for {phrase}."
     anns: list[Annotation] = []
     _track(text, phrase, "implicit", anns)
     return text, anns

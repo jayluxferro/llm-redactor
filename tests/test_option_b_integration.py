@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,7 +17,6 @@ from llm_redactor.config import Config
 from llm_redactor.pipeline.option_b import OptionBPipeline, RefusalError
 from llm_redactor.redact.placeholder import PREFIX, SUFFIX
 from llm_redactor.transport.http_proxy import app, configure
-
 
 # --- Pipeline unit tests (no HTTP) ---
 
@@ -97,8 +96,7 @@ async def test_pipeline_coreference_stability(pipeline: OptionBPipeline):
             {
                 "role": "user",
                 "content": (
-                    "Email bob@corp.com about the meeting. "
-                    "CC bob@corp.com on the follow-up."
+                    "Email bob@corp.com about the meeting. CC bob@corp.com on the follow-up."
                 ),
             },
         ],
@@ -154,8 +152,7 @@ async def test_pipeline_multiple_pii_types(pipeline: OptionBPipeline):
             {
                 "role": "user",
                 "content": (
-                    "Contact alice@example.org or call 555-123-4567. "
-                    "Key: AKIAIOSFODNN7EXAMPLE"
+                    "Contact alice@example.org or call 555-123-4567. Key: AKIAIOSFODNN7EXAMPLE"
                 ),
             },
         ],
@@ -194,8 +191,12 @@ async def test_strict_mode_refuses_low_confidence():
     from llm_redactor.detect.types import Span
 
     low_conf_span = Span(
-        start=8, end=25, kind="email", confidence=0.3,
-        text="alice@example.org", source="test",
+        start=8,
+        end=25,
+        kind="email",
+        confidence=0.3,
+        text="alice@example.org",
+        source="test",
     )
 
     with (
@@ -245,6 +246,7 @@ def test_http_proxy_redacts_and_restores(client: TestClient):
         )
 
     assert resp.status_code == 200
+    assert resp.headers.get("X-LLM-Redactor-Mode") == "redacted"
     data = resp.json()
     content = data["choices"][0]["message"]["content"]
     assert "alice@example.org" in content
@@ -259,3 +261,134 @@ def test_http_proxy_stats(client: TestClient):
     data = resp.json()
     assert "requests" in data
     assert "detections" in data
+
+
+def test_http_proxy_refuses_tools_when_policy_refuse() -> None:
+    """tools_policy=refuse returns 422 without contacting upstream."""
+    cfg = Config()
+    cfg.pipeline.opt_b_redact.strict = False
+    cfg.transport.tools_policy = "refuse"
+    configure(cfg, use_ner=False)
+    c = TestClient(app)
+    body: dict[str, Any] = {
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "fn",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+        ],
+    }
+    r = c.post("/v1/chat/completions", json=body)
+    assert r.status_code == 422
+    err = r.json()["error"]
+    assert err["reason"] == "tools_or_functions_present"
+
+
+async def _fake_sse_stream(*_a: Any, **_k: Any):
+    ph = f"{PREFIX}EMAIL_1{SUFFIX}"
+    ev: dict[str, Any] = {"choices": [{"delta": {"content": f"notified {ph}"}}]}
+    yield f"data: {json.dumps(ev)}\n\n".encode()
+    yield b"data: [DONE]\n\n"
+
+
+def test_openai_stream_restores_placeholders() -> None:
+    """Golden SSE path: placeholder in model delta is restored before client sees it."""
+    cfg = Config()
+    cfg.pipeline.opt_b_redact.strict = False
+    configure(cfg, use_ner=False)
+    c = TestClient(app)
+    with patch(
+        "llm_redactor.transport.http_proxy.forward_chat_completion_stream",
+        new=_fake_sse_stream,
+    ):
+        with c.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o-mini",
+                "stream": True,
+                "messages": [{"role": "user", "content": "Notify alice@example.org."}],
+            },
+        ) as resp:
+            assert resp.status_code == 200
+            assert resp.headers.get("x-llm-redactor-mode") == "redacted"
+            raw = b"".join(resp.iter_bytes())
+
+    assert b"alice@example.org" in raw
+
+
+async def _fake_sse_stream_split_placeholder(*_a: Any, **_k: Any):
+    """Upstream sends the redacted placeholder split across two SSE deltas."""
+    ph = f"{PREFIX}EMAIL_1{SUFFIX}"
+    mid = max(1, len(ph) // 2)
+    ev1 = {"choices": [{"delta": {"content": f"notified {ph[:mid]}"}}]}
+    ev2 = {"choices": [{"delta": {"content": f"{ph[mid:]} today."}}]}
+    yield f"data: {json.dumps(ev1)}\n\n".encode()
+    yield f"data: {json.dumps(ev2)}\n\n".encode()
+    yield b"data: [DONE]\n\n"
+
+
+def test_openai_stream_splits_placeholder_across_chunks() -> None:
+    """Restoration must tolerate placeholders split across SSE chunk boundaries."""
+    cfg = Config()
+    cfg.pipeline.opt_b_redact.strict = False
+    configure(cfg, use_ner=False)
+    c = TestClient(app)
+    with patch(
+        "llm_redactor.transport.http_proxy.forward_chat_completion_stream",
+        new=_fake_sse_stream_split_placeholder,
+    ):
+        with c.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o-mini",
+                "stream": True,
+                "messages": [{"role": "user", "content": "Notify alice@example.org."}],
+            },
+        ) as resp:
+            assert resp.status_code == 200
+            raw = b"".join(resp.iter_bytes())
+
+    assert b"alice@example.org" in raw
+
+
+def test_http_proxy_tools_bypass_sets_header() -> None:
+    """Transparent tool forward includes bypass response headers."""
+    cfg = Config()
+    cfg.pipeline.opt_b_redact.strict = False
+    cfg.transport.tools_policy = "bypass"
+    configure(cfg, use_ner=False)
+    c = TestClient(app)
+
+    async def mock_forward(outgoing: dict, config: Any, **kwargs: Any) -> dict:
+        return _mock_cloud_response("ok")
+
+    with patch(
+        "llm_redactor.transport.cloud.forward_chat_completion",
+        side_effect=mock_forward,
+    ):
+        resp = c.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": "x"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "t",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    },
+                ],
+            },
+        )
+    assert resp.status_code == 200
+    assert resp.headers.get("X-LLM-Redactor-Mode") == "bypass-tools"
+    assert resp.headers.get("X-LLM-Redactor-Bypass-Reason") == "tools-or-functions"

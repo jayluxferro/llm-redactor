@@ -127,7 +127,7 @@ def _go_handler(c: Corpus) -> tuple[str, list[Annotation]]:
         f'    "net/http"\n'
         f'    "log"\n'
         f")\n\n"
-        f"const internalEndpoint = \"https://{hostname}/rpc\"\n\n"
+        f'const internalEndpoint = "https://{hostname}/rpc"\n\n'
         f"func {func.lstrip('_')}Handler(w http.ResponseWriter, r *http.Request) {{\n"
         f'    log.Printf("processing request from %s", r.RemoteAddr)\n'
         f"    // business logic\n"

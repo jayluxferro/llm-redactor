@@ -6,10 +6,9 @@ import os
 import tempfile
 from pathlib import Path
 
-import pytest
 import yaml
 
-from llm_redactor.config import Config, load_config
+from llm_redactor.config import load_config
 
 
 def test_load_default_config():
@@ -49,9 +48,17 @@ def test_env_overrides(monkeypatch):
     """Environment variables override YAML and defaults."""
     monkeypatch.setenv("LLM_REDACTOR_HTTP_PORT", "1234")
     monkeypatch.setenv("LLM_REDACTOR_EPSILON", "1.5")
+    monkeypatch.setenv("LLM_REDACTOR_LLM_VALIDATION", "true")
+    monkeypatch.setenv("LLM_REDACTOR_PLACEHOLDER_REQUEST_TAG", "1")
+    monkeypatch.setenv("LLM_REDACTOR_TOOLS_POLICY", "refuse")
+    monkeypatch.setenv("LLM_REDACTOR_MCP_SESSION_CAP", "42")
     c = load_config(None)
     assert c.transport.http_port == 1234
     assert c.pipeline.opt_h_dp_noise.epsilon == 1.5
+    assert c.pipeline.llm_validation.enabled is True
+    assert c.pipeline.placeholder_request_tag is True
+    assert c.transport.tools_policy == "refuse"
+    assert c.transport.mcp_session_cap == 42
 
 
 def test_missing_file_returns_defaults():

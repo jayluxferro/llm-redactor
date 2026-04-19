@@ -34,9 +34,11 @@ class OptionGPipeline:
     config: Config
     num_parties: int = 3
     embedding_dim: int = 768
-    _stats: dict[str, int] = field(default_factory=lambda: {
-        "requests": 0,
-    })
+    _stats: dict[str, int] = field(
+        default_factory=lambda: {
+            "requests": 0,
+        }
+    )
 
     @property
     def stats(self) -> dict[str, int]:
@@ -47,11 +49,7 @@ class OptionGPipeline:
         self._stats["requests"] += 1
 
         messages = body.get("messages", [])
-        text = " ".join(
-            m.get("content", "")
-            for m in messages
-            if isinstance(m.get("content"), str)
-        )
+        text = " ".join(m.get("content", "") for m in messages if isinstance(m.get("content"), str))
         # Stub tokenisation: character codes, capped for MPC latency.
         token_ids = [ord(c) for c in text[:128]]
 

@@ -11,7 +11,6 @@ For evaluation: outgoing_text = "" (no tokens sent).  The paper reports this as
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -36,9 +35,11 @@ class OptionEPipeline:
     local_layers: int = 4
     remote_layers: int = 24
     hidden_dim: int = 4096
-    _stats: dict[str, int] = field(default_factory=lambda: {
-        "requests": 0,
-    })
+    _stats: dict[str, int] = field(
+        default_factory=lambda: {
+            "requests": 0,
+        }
+    )
 
     @property
     def stats(self) -> dict[str, int]:
@@ -50,11 +51,7 @@ class OptionEPipeline:
 
         # Extract text to compute token IDs (simplified: char-level).
         messages = body.get("messages", [])
-        text = " ".join(
-            m.get("content", "")
-            for m in messages
-            if isinstance(m.get("content"), str)
-        )
+        text = " ".join(m.get("content", "") for m in messages if isinstance(m.get("content"), str))
         # Stub tokenisation: use character codes.
         token_ids = [ord(c) for c in text[:512]]
 

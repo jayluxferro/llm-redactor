@@ -366,7 +366,44 @@ uv run python -m evals.run_eval --option B --use-ner
 
 # Specific option and workload
 uv run python -m evals.run_eval --option A+B+C --use-ner -w wl1_pii
+
+# Named presets (reproducible bundles; see evals/run_eval.py)
+uv run python -m evals.run_eval --list-presets
+uv run python -m evals.run_eval --preset readme-b-ner
+uv run python -m evals.run_eval --preset quick-wl1
+uv run python -m evals.run_eval --preset implicit-bc
 ```
+
+### Measurable bundles (implicit / semantic PII)
+
+Workload **wl3_implicit** is where redaction alone plateaus. Compare options on that
+slice explicitly, for example `--preset implicit-bc` (B+C + NER) versus `--preset
+readme-b-ner` (B + NER across all workloads). Latency and utility live in the eval
+outputs under `evals/results_*`.
+
+## Operator hardening (proxy + MCP)
+
+- **Structured logs**: JSON lines on the `llm_redactor` logger (`pipeline_redact_prepared`,
+  `proxy_tools_bypass`, `mcp_scrub`, …) contain counts and flags only — never raw prompts.
+- **Tool calls**: `transport.tools_policy: refuse` returns HTTP 422 instead of silently
+  forwarding unredacted tool payloads; `bypass` adds `X-LLM-Redactor-Mode: bypass-tools`.
+  Environment override: `LLM_REDACTOR_TOOLS_POLICY`.
+- **LLM validation**: set `pipeline.llm_validation.enabled: true` (or
+  `LLM_REDACTOR_LLM_VALIDATION=true`) so the HTTP proxy and `llm.chat` / `redact.scrub` use
+  Ollama to filter NER false positives.
+- **Placeholder binding**: `pipeline.placeholder_request_tag: true` (or
+  `LLM_REDACTOR_PLACEHOLDER_REQUEST_TAG=1`) embeds a per-request random suffix in each
+  placeholder (`⟨EMAIL_1·…⟩`), shrinking accidental model echo collisions.
+- **MCP session cap**: `transport.mcp_session_cap` / `LLM_REDACTOR_MCP_SESSION_CAP` bounds
+  in-memory `redact.scrub` sessions; oldest entries are evicted under pressure.
+
+Example config: [`examples/operator-hardening.yaml`](examples/operator-hardening.yaml).
+
+## Multilingual / locale NER
+
+Set `local_model.ner_model` in YAML (for example `xx_ent_wiki_sm`) and ensure the spaCy
+weights are installed in the environment. Regex patterns remain English-centric unless
+you extend them via `policy.extend_patterns_file`.
 
 ## Known limitations
 
@@ -383,7 +420,7 @@ uv run python -m evals.run_eval --option A+B+C --use-ner -w wl1_pii
 ## Tests
 
 ```bash
-uv run pytest -v   # 46 tests
+uv run pytest -v   # 51 tests
 ```
 
 ## License

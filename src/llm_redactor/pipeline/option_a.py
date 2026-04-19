@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal
 
 import httpx
 
@@ -26,15 +26,44 @@ _DECISION_RE = re.compile(r"\b(TRIVIAL|COMPLEX)\b", re.IGNORECASE)
 CLASSIFIER_MESSAGES: list[dict[str, str]] = [
     {"role": "user", "content": "Classify: What is 2+2? Answer TRIVIAL or COMPLEX only."},
     {"role": "assistant", "content": "TRIVIAL"},
-    {"role": "user", "content": "Classify: Design a distributed consensus algorithm for a multi-region database. Answer TRIVIAL or COMPLEX only."},
+    {
+        "role": "user",
+        "content": (
+            "Classify: Design a distributed consensus algorithm for a multi-region database. "
+            "Answer TRIVIAL or COMPLEX only."
+        ),
+    },
     {"role": "assistant", "content": "COMPLEX"},
-    {"role": "user", "content": "Classify: Rename variable x to count. Answer TRIVIAL or COMPLEX only."},
+    {
+        "role": "user",
+        "content": (
+            "Classify: Rename variable x to count. Answer TRIVIAL or COMPLEX only."
+        ),
+    },
     {"role": "assistant", "content": "TRIVIAL"},
-    {"role": "user", "content": "Classify: Refactor the auth module to support OAuth2 with PKCE flow across three services. Answer TRIVIAL or COMPLEX only."},
+    {
+        "role": "user",
+        "content": (
+            "Classify: Refactor the auth module to support OAuth2 with PKCE flow across "
+            "three services. Answer TRIVIAL or COMPLEX only."
+        ),
+    },
     {"role": "assistant", "content": "COMPLEX"},
-    {"role": "user", "content": "Classify: What does the len() function do in Python? Answer TRIVIAL or COMPLEX only."},
+    {
+        "role": "user",
+        "content": (
+            "Classify: What does the len() function do in Python? "
+            "Answer TRIVIAL or COMPLEX only."
+        ),
+    },
     {"role": "assistant", "content": "TRIVIAL"},
-    {"role": "user", "content": "Classify: Analyze the security implications of this authentication middleware and suggest improvements. Answer TRIVIAL or COMPLEX only."},
+    {
+        "role": "user",
+        "content": (
+            "Classify: Analyze the security implications of this authentication middleware "
+            "and suggest improvements. Answer TRIVIAL or COMPLEX only."
+        ),
+    },
     {"role": "assistant", "content": "COMPLEX"},
 ]
 
@@ -52,7 +81,11 @@ class RouteResult:
 def _parse_classification(raw: str) -> Classification:
     match = _DECISION_RE.search(raw)
     if match:
-        return match.group(1).upper()  # type: ignore[return-value]
+        word = match.group(1).upper()
+        if word == "TRIVIAL":
+            return "TRIVIAL"
+        if word == "COMPLEX":
+            return "COMPLEX"
     return "COMPLEX"
 
 
@@ -65,10 +98,12 @@ async def classify(
 ) -> Classification:
     """Classify a request as TRIVIAL or COMPLEX using a local model."""
     messages = list(CLASSIFIER_MESSAGES)
-    messages.append({
-        "role": "user",
-        "content": f"Classify: {text[:500]} Answer TRIVIAL or COMPLEX only.",
-    })
+    messages.append(
+        {
+            "role": "user",
+            "content": f"Classify: {text[:500]} Answer TRIVIAL or COMPLEX only.",
+        }
+    )
 
     url = f"{endpoint.rstrip('/')}/api/chat"
     body = {

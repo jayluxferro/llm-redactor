@@ -75,8 +75,7 @@ async def mpc_embedding_stub(
 
         # Simulate per-party lookup + reconstruction
         _embedding = [
-            sum(random.gauss(0, 0.02) for _ in range(num_parties))
-            for _ in range(embedding_dim)
+            sum(random.gauss(0, 0.02) for _ in range(num_parties)) for _ in range(embedding_dim)
         ]
         await asyncio.sleep(random.uniform(0.04, 0.06))
 

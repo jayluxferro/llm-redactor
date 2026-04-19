@@ -69,10 +69,7 @@ async def split_forward_stub(
 
     # --- local prefix layers (stub) ---
     t0 = time.perf_counter()
-    activation = [
-        [random.gauss(0, 0.02) for _ in range(hidden_dim)]
-        for _ in range(seq_len)
-    ]
+    activation = [[random.gauss(0, 0.02) for _ in range(hidden_dim)] for _ in range(seq_len)]
     latency_local_ms = (time.perf_counter() - t0) * 1000
 
     # --- remote middle layers ---

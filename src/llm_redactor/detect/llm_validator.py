@@ -19,7 +19,6 @@ import httpx
 
 from .types import Span
 
-
 # Context window: characters before/after the span to include.
 _CONTEXT_CHARS = 80
 
@@ -92,8 +91,9 @@ async def _batch_validate(
         ctx_end = min(len(text), span.end + _CONTEXT_CHARS)
         context = text[ctx_start:ctx_end]
 
+        meta = f'{span.kind}, confidence: {span.confidence:.2f}'
         entries.append(
-            f"Span {i+1}: \"{span.text}\" (detected as: {span.kind}, confidence: {span.confidence:.2f})\n"
+            f'Span {i + 1}: "{span.text}" (detected as: {meta})\n'
             f"Context: ...{context}..."
         )
 

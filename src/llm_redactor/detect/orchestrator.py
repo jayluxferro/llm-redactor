@@ -4,24 +4,55 @@ from __future__ import annotations
 
 import re
 
-from .regex import detect_regex
 from .ner import detect_ner
+from .regex import detect_regex
 from .types import Span
-
 
 # Common false positives from NER — short words, abbreviations, and
 # generic terms that Presidio/spaCy frequently misclassify.
 _FP_SUPPRESS: set[str] = {
     # Generic words misclassified as ORG
-    "pii", "api", "ssn", "dob", "ehr", "phi", "hipaa", "gdpr",
-    "sql", "csv", "json", "xml", "html", "http", "https", "url",
-    "llm", "nlp", "ner", "gpt", "ai", "ml", "dl",
+    "pii",
+    "api",
+    "ssn",
+    "dob",
+    "ehr",
+    "phi",
+    "hipaa",
+    "gdpr",
+    "sql",
+    "csv",
+    "json",
+    "xml",
+    "html",
+    "http",
+    "https",
+    "url",
+    "llm",
+    "nlp",
+    "ner",
+    "gpt",
+    "ai",
+    "ml",
+    "dl",
     # Time expressions misclassified as DATE_TIME
-    "today", "yesterday", "tomorrow", "now", "recently",
+    "today",
+    "yesterday",
+    "tomorrow",
+    "now",
+    "recently",
     # Quarter references misclassified as various
-    "q1", "q2", "q3", "q4",
+    "q1",
+    "q2",
+    "q3",
+    "q4",
     # Common nouns misclassified as LOCATION
-    "café", "cafe", "office", "home", "here", "there",
+    "café",
+    "cafe",
+    "office",
+    "home",
+    "here",
+    "there",
 }
 
 # Patterns for false positives that need regex matching.
@@ -92,6 +123,7 @@ def configure_detection(
 ) -> None:
     """Configure detection parameters. Call before first detect_all()."""
     from .ner import configure_ner
+
     configure_ner(model_name=ner_model, confidence_floor=ner_confidence_floor)
 
 
@@ -131,7 +163,8 @@ async def detect_all_validated(
 
     # LLM validation pass — only validates NER spans (regex are auto-kept).
     validated = await validate_spans(
-        text, merged,
+        text,
+        merged,
         endpoint=ollama_endpoint,
         model=ollama_model,
     )

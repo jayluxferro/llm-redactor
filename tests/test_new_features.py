@@ -2,17 +2,14 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from fastapi.testclient import TestClient
 
+from evals.cost_meter import _count_tokens, measure_cost
+from evals.runner import RunResult
+from evals.schema import Annotation, Sample
 from llm_redactor.config import Config
 from llm_redactor.pipeline.option_ab import OptionABPipeline
-from evals.cost_meter import CostResult, measure_cost, _count_tokens
-from evals.schema import Sample, Annotation
-from evals.runner import RunResult
-
 
 # --------------- Fixtures ---------------
 
@@ -130,7 +127,8 @@ def test_anthropic_content_blocks_redaction():
     """Verify Anthropic content block format is handled."""
     from llm_redactor.transport.http_proxy import app, configure
 
-    configure(Config())
+    cfg = Config()
+    configure(cfg, use_ner=False)
     client = TestClient(app)
 
     body = {
@@ -158,10 +156,11 @@ def test_anthropic_content_blocks_redaction():
 def test_proxy_config_after_changes():
     from llm_redactor.transport.http_proxy import app, configure
 
-    configure(Config())
+    configure(Config(), use_ner=False)
     client = TestClient(app)
     resp = client.get("/v1/redactor/config")
     assert resp.status_code == 200
     data = resp.json()
     assert "pipeline" in data
+    assert "transport" in data
     assert "cloud_target" in data

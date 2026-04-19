@@ -10,10 +10,8 @@ from __future__ import annotations
 
 import csv
 import io
-import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from .leak_meter import WorkloadLeakSummary
 from .utility_meter import WorkloadUtilitySummary
@@ -41,7 +39,6 @@ class EvalRow:
 
 def leak_summary_to_row(summary: WorkloadLeakSummary) -> EvalRow:
     """Convert a WorkloadLeakSummary to an EvalRow."""
-    latencies = [lr.latency_ms_median for lr in []]  # placeholder
     return EvalRow(
         option=summary.option,
         workload=summary.workload,
@@ -85,8 +82,10 @@ def add_utility_to_row(
 def rows_to_markdown(rows: list[EvalRow]) -> str:
     """Format rows as a Markdown table."""
     lines = [
-        "| Option | Workload | Samples | Exact Leak | Partial Leak | Combined | FP Rate | Quality Δ | Latency p50 | Latency p95 |",
-        "|--------|----------|--------:|-----------:|-------------:|---------:|--------:|----------:|------------:|------------:|",
+        "| Option | Workload | Samples | Exact Leak | Partial Leak | Combined | "
+        "FP Rate | Quality Δ | Latency p50 | Latency p95 |",
+        "|--------|----------|--------:|-----------:|-------------:|---------:|"
+        "--------:|----------:|------------:|------------:|",
     ]
     for r in rows:
         qd = f"{r.quality_delta:+.3f}" if r.quality_delta is not None else "—"
@@ -105,21 +104,37 @@ def rows_to_csv(rows: list[EvalRow]) -> str:
     """Format rows as CSV."""
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow([
-        "option", "workload", "num_samples", "total_annotations",
-        "exact_leak_rate", "partial_leak_rate", "combined_leak_rate",
-        "false_positive_rate", "quality_delta",
-        "latency_ms_median", "latency_ms_p95",
-    ])
+    writer.writerow(
+        [
+            "option",
+            "workload",
+            "num_samples",
+            "total_annotations",
+            "exact_leak_rate",
+            "partial_leak_rate",
+            "combined_leak_rate",
+            "false_positive_rate",
+            "quality_delta",
+            "latency_ms_median",
+            "latency_ms_p95",
+        ]
+    )
     for r in rows:
-        writer.writerow([
-            r.option, r.workload, r.num_samples, r.total_annotations,
-            f"{r.exact_leak_rate:.6f}", f"{r.partial_leak_rate:.6f}",
-            f"{r.combined_leak_rate:.6f}", f"{r.false_positive_rate:.6f}",
-            f"{r.quality_delta:.6f}" if r.quality_delta is not None else "",
-            f"{r.latency_ms_median:.3f}" if r.latency_ms_median is not None else "",
-            f"{r.latency_ms_p95:.3f}" if r.latency_ms_p95 is not None else "",
-        ])
+        writer.writerow(
+            [
+                r.option,
+                r.workload,
+                r.num_samples,
+                r.total_annotations,
+                f"{r.exact_leak_rate:.6f}",
+                f"{r.partial_leak_rate:.6f}",
+                f"{r.combined_leak_rate:.6f}",
+                f"{r.false_positive_rate:.6f}",
+                f"{r.quality_delta:.6f}" if r.quality_delta is not None else "",
+                f"{r.latency_ms_median:.3f}" if r.latency_ms_median is not None else "",
+                f"{r.latency_ms_p95:.3f}" if r.latency_ms_p95 is not None else "",
+            ]
+        )
     return buf.getvalue()
 
 
@@ -178,9 +193,10 @@ def write_report(
 
 def _generate_figures(rows: list[EvalRow], output_dir: Path) -> None:
     """Generate matplotlib figures for the paper."""
-    import matplotlib
+    import matplotlib  # type: ignore[import-not-found]
+
     matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+    import matplotlib.pyplot as plt  # type: ignore[import-not-found]
 
     # Grouped bar chart: exact leak rate per workload.
     workloads = sorted(set(r.workload for r in rows))

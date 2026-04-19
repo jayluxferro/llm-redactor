@@ -5,9 +5,10 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-import matplotlib
+import matplotlib  # type: ignore[import-not-found]
+
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt  # type: ignore[import-not-found]
 import numpy as np
 
 RESULTS_DIR = Path(__file__).parent
@@ -144,8 +145,7 @@ def fig_pareto(rows: list[dict]) -> None:
         lat = float(r["latency_ms_median"]) if r["latency_ms_median"] else 0
         ax.scatter(lat, leak, s=100, zorder=5)
         label = opt.replace("(local)", "").replace("(e=", " e=").replace(")", "")
-        ax.annotate(label, (lat, leak), textcoords="offset points",
-                    xytext=(8, 4), fontsize=9)
+        ax.annotate(label, (lat, leak), textcoords="offset points", xytext=(8, 4), fontsize=9)
 
     ax.set_xlabel("Median Latency (ms)", fontsize=12)
     ax.set_ylabel("Exact Leak Rate", fontsize=12)

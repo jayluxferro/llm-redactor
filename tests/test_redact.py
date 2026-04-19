@@ -52,3 +52,15 @@ def test_empty_spans():
     result = redact(text, [])
     assert result.redacted_text == text
     assert result.reverse_map == {}
+
+
+def test_session_tag_in_placeholder():
+    text = "Contact alice@example.org please."
+    spans = [_span(8, 25, "email", "alice@example.org")]
+    result = redact(text, spans, session_tag="a1b2c3d")
+
+    expected_ph = f"{PREFIX}EMAIL_1\u00b7a1b2c3d{SUFFIX}"
+    assert expected_ph in result.redacted_text
+    assert result.reverse_map[expected_ph] == "alice@example.org"
+    restored = restore(f"Sent to {expected_ph}.", result.reverse_map)
+    assert "alice@example.org" in restored

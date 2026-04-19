@@ -20,7 +20,6 @@ with the expected JSON fields, which is sufficient for the paper demo.
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
 from typing import Any
 

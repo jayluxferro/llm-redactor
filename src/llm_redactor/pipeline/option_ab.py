@@ -37,12 +37,14 @@ class OptionABPipeline:
 
     config: Config
     use_ner: bool = True
-    _stats: dict[str, int] = field(default_factory=lambda: {
-        "requests": 0,
-        "routed_local": 0,
-        "routed_cloud": 0,
-        "detections": 0,
-    })
+    _stats: dict[str, int] = field(
+        default_factory=lambda: {
+            "requests": 0,
+            "routed_local": 0,
+            "routed_cloud": 0,
+            "detections": 0,
+        }
+    )
 
     @property
     def stats(self) -> dict[str, int]:
@@ -53,18 +55,16 @@ class OptionABPipeline:
         self._stats["requests"] += 1
 
         messages = body.get("messages", [])
-        text = " ".join(
-            m.get("content", "")
-            for m in messages
-            if isinstance(m.get("content"), str)
-        )
+        text = " ".join(m.get("content", "") for m in messages if isinstance(m.get("content"), str))
 
         # Stage 1: Option A classification.
         ollama_endpoint = self.config.local_model.endpoint
         ollama_model = self.config.local_model.chat_model
 
         classification = await classify(
-            text, endpoint=ollama_endpoint, model=ollama_model,
+            text,
+            endpoint=ollama_endpoint,
+            model=ollama_model,
         )
 
         if classification == "TRIVIAL":
@@ -73,13 +73,13 @@ class OptionABPipeline:
             from ..pipeline.option_a import answer_locally
 
             local_answer = await answer_locally(
-                text, endpoint=ollama_endpoint, model=ollama_model,
+                text,
+                endpoint=ollama_endpoint,
+                model=ollama_model,
             )
 
             response = {
-                "choices": [
-                    {"message": {"role": "assistant", "content": local_answer}}
-                ],
+                "choices": [{"message": {"role": "assistant", "content": local_answer}}],
             }
 
             return OptionABPipelineResult(
@@ -135,8 +135,7 @@ class OptionABPipeline:
                     msg["content"] = restore(content, combined_reverse_map)
 
         outgoing_text = " ".join(
-            m.get("content", "") for m in outgoing_messages
-            if isinstance(m.get("content"), str)
+            m.get("content", "") for m in outgoing_messages if isinstance(m.get("content"), str)
         )
         sensitive_sent = sum(1 for s in all_detections if s.text in outgoing_text)
 
