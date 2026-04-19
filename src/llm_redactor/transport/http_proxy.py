@@ -19,8 +19,11 @@ from ..detect.types import Span
 from ..pipeline.option_b import OptionBPipeline, RefusalError
 from ..redact.placeholder import redact
 from ..redact.restore import restore
+import httpx
+
 from ..transport.cloud import (
     forward_anthropic_messages,
+    forward_anthropic_messages_stream,
     forward_chat_completion_stream,
 )
 
@@ -202,13 +205,20 @@ async def anthropic_messages(request: Request) -> JSONResponse:
     outgoing["stream"] = False
 
     # Forward all headers from the incoming request (minus hop-by-hop).
-    _skip = frozenset({"host", "transfer-encoding", "connection", "content-length", "content-encoding", "anthropic-beta"})
+    _skip = frozenset({"host", "transfer-encoding", "connection", "content-length", "content-encoding"})
     upstream_headers = {k: v for k, v in request.headers.items() if k.lower() not in _skip}
 
     try:
         cloud_response = await forward_anthropic_messages(
             outgoing, config.cloud_target, upstream_headers=upstream_headers
         )
+    except httpx.HTTPStatusError as e:
+        # Pass through the upstream status code and body instead of masking as 502.
+        try:
+            body = e.response.json()
+        except Exception:
+            body = {"error": e.response.text[:500]}
+        return JSONResponse(status_code=e.response.status_code, content=body)
     except Exception as e:
         return JSONResponse(status_code=502, content={"error": str(e)})
 
