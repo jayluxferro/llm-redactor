@@ -328,16 +328,36 @@ Precedence: environment variables > YAML file > defaults.
 
 Every detected span has a **kind** (the specific detector tag) and a
 **category** (the policy-level grouping). Use `policy.categories` in your
-YAML config to enable or disable entire families:
+YAML config to enable or disable entire families.
+
+### Category aliases (default)
+
+The four top-level aliases are the defaults and cover everything:
+
+| Alias | Expands to |
+|---|---|
+| `pii` | identity, contact, government_id, financial, medical, temporal |
+| `secret` | credential, cloud_credential, vendor_api_key, private_key |
+| `org_identifier` | infrastructure |
+| `customer_name` | identity |
 
 ```yaml
+# Default — detects all sensitive data:
 policy:
-  categories:
-    - identity
-    - contact
-    - credential
-    - cloud_credential
-    # omit categories you don't need
+  categories: [pii, secret, org_identifier, customer_name]
+```
+
+You can mix aliases and fine-grained categories freely:
+
+```yaml
+# Only secrets and contact info:
+policy:
+  categories: [secret, contact]
+
+# Everything except temporal:
+policy:
+  categories: [pii, secret, org_identifier, customer_name]
+  # then filter temporal in your extend_patterns_file or post-processing
 ```
 
 ### Full taxonomy

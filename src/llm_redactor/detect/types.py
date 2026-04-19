@@ -91,8 +91,36 @@ CATEGORY_MAP: dict[str, str] = {
     "hostname_internal": "infrastructure",
 }
 
-#: Every category in the taxonomy.
+#: Every fine-grained category in the taxonomy.
 ALL_CATEGORIES: list[str] = sorted(set(CATEGORY_MAP.values()))
+
+# ---------------------------------------------------------------------------
+# Aliases: top-level shorthand that expand to one or more fine-grained
+# categories.  Operators can use either level in ``policy.categories``.
+# ---------------------------------------------------------------------------
+
+CATEGORY_ALIASES: dict[str, list[str]] = {
+    "pii": ["identity", "contact", "government_id", "financial", "medical", "temporal"],
+    "secret": ["credential", "cloud_credential", "vendor_api_key", "private_key"],
+    "org_identifier": ["infrastructure"],
+    "customer_name": ["identity"],
+}
+
+
+def resolve_categories(names: list[str]) -> set[str]:
+    """Expand a list of category names (which may include aliases) into
+    the canonical set of fine-grained categories.
+
+    >>> sorted(resolve_categories(["pii", "cloud_credential"]))
+    ['cloud_credential', 'contact', 'financial', 'government_id', 'identity', 'medical', 'temporal']
+    """
+    resolved: set[str] = set()
+    for name in names:
+        if name in CATEGORY_ALIASES:
+            resolved.update(CATEGORY_ALIASES[name])
+        else:
+            resolved.add(name)
+    return resolved
 
 
 def kind_to_category(kind: str) -> str:

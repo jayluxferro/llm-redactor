@@ -110,19 +110,7 @@ class PipelineConfig:
 class PolicyConfig:
     strict_refuse_on_unknown_sensitive: bool = True
     categories: list[str] = field(
-        default_factory=lambda: [
-            "identity",
-            "contact",
-            "government_id",
-            "financial",
-            "medical",
-            "temporal",
-            "credential",
-            "cloud_credential",
-            "vendor_api_key",
-            "private_key",
-            "infrastructure",
-        ]
+        default_factory=lambda: ["pii", "secret", "org_identifier", "customer_name"]
     )
     extend_patterns_file: str = ".llm_redactor/patterns.yaml"
 

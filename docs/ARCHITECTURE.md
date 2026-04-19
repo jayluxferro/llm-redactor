@@ -167,9 +167,15 @@ pipeline:
 
 policy:
   strict_refuse_on_unknown_sensitive: true
-  categories: [pii, secret, org_identifier, customer_name]
+  categories: [pii, secret, org_identifier, customer_name]  # aliases; see README for full taxonomy
   extend_patterns_file: .llm_redactor/patterns.yaml
 ```
+
+Category aliases expand at runtime: `pii` → identity, contact, government_id,
+financial, medical, temporal; `secret` → credential, cloud_credential,
+vendor_api_key, private_key; `org_identifier` → infrastructure;
+`customer_name` → identity.  Fine-grained names can be used directly
+(e.g. `[credential, contact]`).
 
 ## State directory
 
