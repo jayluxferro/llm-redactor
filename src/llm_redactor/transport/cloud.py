@@ -31,7 +31,11 @@ async def forward_chat_completion(
     if api_key and "authorization" not in headers:
         headers["Authorization"] = f"Bearer {api_key}"
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    client_ua = headers.pop("user-agent", None)
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        headers={"user-agent": client_ua} if client_ua else {},
+    ) as client:
         resp = await client.post(url, json=body, headers=headers)
         resp.raise_for_status()
         return resp.json()
@@ -57,7 +61,11 @@ async def forward_chat_completion_stream(
     if api_key and "authorization" not in headers:
         headers["Authorization"] = f"Bearer {api_key}"
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    client_ua = headers.pop("user-agent", None)
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        headers={"user-agent": client_ua} if client_ua else {},
+    ) as client:
         async with client.stream("POST", url, json=body, headers=headers) as resp:
             resp.raise_for_status()
             async for chunk in resp.aiter_bytes():
@@ -87,7 +95,12 @@ async def forward_anthropic_messages(
     if api_key and "x-api-key" not in headers and "authorization" not in headers:
         headers["x-api-key"] = api_key
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    # Pass original user-agent on the client so httpx never injects its own
+    client_ua = headers.pop("user-agent", None)
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        headers={"user-agent": client_ua} if client_ua else {},
+    ) as client:
         resp = await client.post(url, json=body, headers=headers)
         resp.raise_for_status()
         return resp.json()
@@ -111,7 +124,12 @@ async def forward_anthropic_messages_stream(
     if api_key and "x-api-key" not in headers and "authorization" not in headers:
         headers["x-api-key"] = api_key
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    # Pass original user-agent on the client so httpx never injects its own
+    client_ua = headers.pop("user-agent", None)
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        headers={"user-agent": client_ua} if client_ua else {},
+    ) as client:
         async with client.stream("POST", url, json=body, headers=headers) as resp:
             resp.raise_for_status()
             async for chunk in resp.aiter_bytes():
