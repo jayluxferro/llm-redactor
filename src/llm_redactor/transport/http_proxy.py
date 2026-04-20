@@ -383,6 +383,11 @@ async def anthropic_messages(request: Request) -> JSONResponse:
         except Exception:
             err_body = {"error": e.response.text[:500]}
         return JSONResponse(status_code=e.response.status_code, content=err_body)
+    except httpx.TimeoutException as e:
+        return JSONResponse(
+            status_code=504,
+            content={"error": {"type": "upstream_timeout", "message": str(e)}},
+        )
     except Exception as e:
         return JSONResponse(status_code=502, content={"error": str(e)})
 

@@ -82,7 +82,8 @@ async def forward_anthropic_messages(
     # Start with forwarded headers, then overlay service essentials.
     headers: dict[str, str] = dict(upstream_headers) if upstream_headers else {}
     headers["content-type"] = "application/json"
-    headers["anthropic-version"] = "2023-06-01"
+    if "anthropic-version" not in headers:
+        headers["anthropic-version"] = "2023-06-01"
     if api_key and "x-api-key" not in headers and "authorization" not in headers:
         headers["x-api-key"] = api_key
 
@@ -105,7 +106,8 @@ async def forward_anthropic_messages_stream(
 
     headers: dict[str, str] = dict(upstream_headers) if upstream_headers else {}
     headers["content-type"] = "application/json"
-    headers["anthropic-version"] = "2023-06-01"
+    if "anthropic-version" not in headers:
+        headers["anthropic-version"] = "2023-06-01"
     if api_key and "x-api-key" not in headers and "authorization" not in headers:
         headers["x-api-key"] = api_key
 
