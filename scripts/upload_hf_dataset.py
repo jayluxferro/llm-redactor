@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from datasets import Dataset, DatasetDict, Features, Sequence, Value
+from datasets import Dataset, Features, Sequence, Value
 from huggingface_hub import HfApi
 
 REPO_ID = "jayluxferro/llm-redactor-leak-benchmark"
@@ -105,7 +105,7 @@ Each sample has the following fields:
 | `annotations` | `list[object]` | Ground-truth sensitive spans |
 | `annotations[].start` | `int` | Start character offset |
 | `annotations[].end` | `int` | End character offset |
-| `annotations[].kind` | `string` | Sensitivity type (e.g. `person`, `email`, `api_key`, `implicit`) |
+| `annotations[].kind` | `string` | Sensitivity type (`person`, `email`, `api_key`, `implicit`) |
 | `annotations[].text` | `string` | The verbatim sensitive span |
 
 ## Annotation kinds
@@ -116,14 +116,17 @@ Each sample has the following fields:
 
 **WL3 (Implicit):** `implicit`, `org_name`
 
-**WL4 (Code):** `project_name`, `org_name`, `internal_function`, `database_name`, `table_name`, `api_key`, `hostname`
+**WL4 (Code):** `project_name`, `org_name`, `internal_function`, \
+`database_name`, `table_name`, `api_key`, `hostname`
 
 ## Citation
 
 ```bibtex
 @article{agyemang2026llmredactor,
-  title={LLM-Redactor: An Empirical Evaluation of Eight Techniques for Privacy-Preserving LLM Requests},
-  author={Agyemang, Justice Owusu and Kponyo, Jerry John and Amponsah, Elliot and Boakye, Godfred Manu Addo and Agyekum, Kwame Opuni-Boachie Obour},
+  title={LLM-Redactor: An Empirical Evaluation of Eight Techniques for \
+Privacy-Preserving LLM Requests},
+  author={Agyemang, Justice Owusu and Kponyo, Jerry John and Amponsah, \
+Elliot and Boakye, Godfred Manu Addo and Agyekum, Kwame Opuni-Boachie Obour},
   year={2026},
   url={https://arxiv.org/abs/2604.12064}
 }

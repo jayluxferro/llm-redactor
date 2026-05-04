@@ -343,7 +343,7 @@ async def _handle_anthropic_stream(
 
 
 @app.post("/v1/messages")
-async def anthropic_messages(request: Request) -> JSONResponse:
+async def anthropic_messages(request: Request) -> JSONResponse | StreamingResponse:
     """Anthropic Messages API endpoint with redaction.
 
     Redacts content blocks in the request, forwards to the Anthropic
