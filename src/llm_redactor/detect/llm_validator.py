@@ -71,11 +71,13 @@ async def validate_spans(
 
     # Deduplicate by (text, kind) — the same phrase detected across
     # multiple messages only needs one LLM verdict.
-    unique_key = lambda s: (s.text.strip().lower(), s.kind)
+    def _key(s: Span) -> tuple[str, str]:
+        return (s.text.strip().lower(), s.kind)
+
     seen: dict[tuple[str, str], int] = {}  # key → index in unique_spans
     deduped: list[Span] = []
     for s in ner_spans:
-        key = unique_key(s)
+        key = _key(s)
         if key not in seen:
             seen[key] = len(deduped)
             deduped.append(s)
@@ -91,7 +93,7 @@ async def validate_spans(
 
     # Apply verdicts to all original spans (including duplicates).
     for s in ner_spans:
-        idx = seen.get(unique_key(s))
+        idx = seen.get(_key(s))
         if idx is not None and idx in kept_indices:
             validated.append(s)
 
