@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import secrets
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -16,12 +17,34 @@ from ..transport.cloud import forward_chat_completion
 
 
 class _SessionTagUnset:
-    """Sentinel: caller did not pass ``session_tag`` (auto-generate or omit)."""
+    """Sentinel: client did not pass ``session_tag`` (auto-generate or omit)."""
 
     __slots__ = ()
 
 
 _SESSION_TAG_UNSET = _SessionTagUnset()
+
+# In-memory LRU cache for detection results.  System prompts and repeated
+# user messages (e.g. "continue", "ok") are identical across requests —
+# re-detecting and re-validating them burns local LLM tokens for no gain.
+_DETECT_CACHE: OrderedDict[str, list[Span]] = OrderedDict()
+_DETECT_CACHE_MAX = 256
+
+
+def _cache_detect(text: str, spans: list[Span]) -> None:
+    key = text
+    _DETECT_CACHE[key] = spans
+    _DETECT_CACHE.move_to_end(key)
+    while len(_DETECT_CACHE) > _DETECT_CACHE_MAX:
+        _DETECT_CACHE.popitem(last=False)
+
+
+def _cached_detect(text: str) -> list[Span] | None:
+    key = text
+    if key in _DETECT_CACHE:
+        _DETECT_CACHE.move_to_end(key)
+        return _DETECT_CACHE[key]
+    return None
 
 
 @dataclass
@@ -60,7 +83,11 @@ class OptionBPipeline:
         return secrets.token_hex(4)
 
     async def detect_spans(self, text: str) -> list[Span]:
-        """Run configured detectors (optional LLM validation via Ollama)."""
+        """Run configured detectors with an in-memory cache for repeated text."""
+        cached = _cached_detect(text)
+        if cached is not None:
+            return filter_by_categories(cached, self.config.policy.categories)
+
         if self.config.pipeline.llm_validation.enabled:
             model = self.config.pipeline.llm_validation.model or self.config.local_model.chat_model
             spans = await detect_all_validated(
@@ -71,6 +98,8 @@ class OptionBPipeline:
             )
         else:
             spans = detect_all(text, use_ner=self.use_ner)
+
+        _cache_detect(text, spans)
         return filter_by_categories(spans, self.config.policy.categories)
 
     async def redact_chat_messages(

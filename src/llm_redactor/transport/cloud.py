@@ -38,7 +38,24 @@ async def forward_chat_completion(
     ) as client:
         resp = await client.post(url, json=body, headers=headers)
         resp.raise_for_status()
+        return _parse_json_response(resp, url)
+
+
+
+def _parse_json_response(resp: httpx.Response, url: str) -> dict[str, Any]:
+    """Parse JSON from an upstream response, with a clear error on failure."""
+    try:
         return resp.json()
+    except Exception:
+        try:
+            text = resp.text[:1024] if resp.text else "(empty body)"
+        except Exception:
+            text = f"(undecodable body, {len(resp.content)} bytes)"
+        raise httpx.HTTPStatusError(
+            message=f"Upstream returned non-JSON response: {text}",
+            request=resp.request,
+            response=resp,
+        )
 
 
 async def forward_chat_completion_stream(
@@ -103,7 +120,7 @@ async def forward_anthropic_messages(
     ) as client:
         resp = await client.post(url, json=body, headers=headers)
         resp.raise_for_status()
-        return resp.json()
+        return _parse_json_response(resp, url)
 
 
 async def forward_anthropic_messages_stream(

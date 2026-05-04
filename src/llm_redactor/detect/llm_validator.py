@@ -20,7 +20,9 @@ import httpx
 from .types import Span
 
 # Context window: characters before/after the span to include.
-_CONTEXT_CHARS = 80
+# Kept small to minimize tokens — enough for the LLM to see surrounding
+# words and decide if the span is real PII or a false positive.
+_CONTEXT_CHARS = 30
 
 _SYSTEM_PROMPT = """\
 You are a PII/secret detection validator. You will be given a text span \
@@ -67,10 +69,31 @@ async def validate_spans(
     if not ner_spans:
         return regex_spans
 
-    # Batch all NER spans into one LLM call for efficiency.
+    # Deduplicate by (text, kind) — the same phrase detected across
+    # multiple messages only needs one LLM verdict.
+    unique_key = lambda s: (s.text.strip().lower(), s.kind)
+    seen: dict[tuple[str, str], int] = {}  # key → index in unique_spans
+    deduped: list[Span] = []
+    for s in ner_spans:
+        key = unique_key(s)
+        if key not in seen:
+            seen[key] = len(deduped)
+            deduped.append(s)
+
+    # Batch all unique NER spans into one LLM call.
     validated = list(regex_spans)
-    kept = await _batch_validate(text, ner_spans, endpoint=endpoint, model=model, timeout=timeout)
-    validated.extend(kept)
+    kept_indices: set[int] = set()
+    if deduped:
+        kept_unique = await _batch_validate(
+            text, deduped, endpoint=endpoint, model=model, timeout=timeout
+        )
+        kept_indices = {deduped.index(s) for s in kept_unique}
+
+    # Apply verdicts to all original spans (including duplicates).
+    for s in ner_spans:
+        idx = seen.get(unique_key(s))
+        if idx is not None and idx in kept_indices:
+            validated.append(s)
 
     return validated
 

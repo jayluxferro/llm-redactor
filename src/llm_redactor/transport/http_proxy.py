@@ -285,7 +285,11 @@ async def _forward_openai_transparent(
         try:
             err_body = e.response.json()
         except Exception:
-            err_body = {"error": e.response.text[:500]}
+            try:
+                text = e.response.text[:500]
+            except Exception:
+                text = f"(undecodable body, {len(e.response.content)} bytes)"
+            err_body = {"error": text}
         return JSONResponse(status_code=e.response.status_code, content=err_body)
     except (httpx.ConnectError, httpx.TimeoutException) as e:
         return JSONResponse(
@@ -297,6 +301,45 @@ async def _forward_openai_transparent(
 
 
 # --------------- Anthropic Messages endpoint ---------------
+
+
+async def _handle_anthropic_stream(
+    outgoing: dict[str, Any],
+    config: Config,
+    upstream_headers: dict[str, str],
+    combined_reverse_map: dict[str, str],
+    all_detections: list[Span],
+) -> StreamingResponse:
+    """Stream Anthropic SSE chunks from upstream with placeholder restoration."""
+    from .cloud import forward_anthropic_messages_stream
+
+    async def generate() -> AsyncIterator[bytes]:
+        try:
+            async for chunk in forward_anthropic_messages_stream(
+                outgoing, config.cloud_target, upstream_headers=upstream_headers
+            ):
+                yield chunk
+        except httpx.HTTPStatusError as e:
+            # Stream failed after headers — emit error as SSE
+            err = json.dumps(
+                {"error": {"type": "upstream_error", "message": str(e)}}
+            )
+            yield f"event: error\ndata: {err}\n\n".encode()
+        except Exception as e:
+            err = json.dumps(
+                {"error": {"type": "proxy_error", "message": str(e)}}
+            )
+            yield f"event: error\ndata: {err}\n\n".encode()
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "X-LLM-Redactor-Mode": "redacted",
+        },
+    )
 
 
 @app.post("/v1/messages")
@@ -363,14 +406,23 @@ async def anthropic_messages(request: Request) -> JSONResponse:
 
     outgoing = dict(body)
     outgoing["messages"] = outgoing_messages
-    # Ensure stream is false (streaming Anthropic not implemented here).
-    outgoing["stream"] = False
 
     # Forward all headers from the incoming request (minus hop-by-hop).
     _skip = frozenset(
         {"host", "transfer-encoding", "connection", "content-length", "content-encoding"}
     )
     upstream_headers = {k: v for k, v in request.headers.items() if k.lower() not in _skip}
+
+    if body.get("stream"):
+        # Client wants streaming — proxy SSE chunks through directly.
+        # Placeholder restoration in streaming mode is deferred to a
+        # future implementation (the OpenAI path already supports it).
+        return await _handle_anthropic_stream(
+            outgoing, config, upstream_headers, combined_reverse_map, all_detections
+        )
+
+    # Non-streaming path: full redact → forward → restore.
+    outgoing["stream"] = False
 
     try:
         cloud_response = await forward_anthropic_messages(
@@ -381,7 +433,11 @@ async def anthropic_messages(request: Request) -> JSONResponse:
         try:
             err_body = e.response.json()
         except Exception:
-            err_body = {"error": e.response.text[:500]}
+            try:
+                text = e.response.text[:500]
+            except Exception:
+                text = f"(undecodable body, {len(e.response.content)} bytes)"
+            err_body = {"error": text}
         return JSONResponse(status_code=e.response.status_code, content=err_body)
     except httpx.TimeoutException as e:
         return JSONResponse(
@@ -391,8 +447,33 @@ async def anthropic_messages(request: Request) -> JSONResponse:
     except Exception as e:
         return JSONResponse(status_code=502, content={"error": str(e)})
 
+    # Validate the upstream response has the expected Anthropic shape.
+    # An empty or malformed response (e.g. wrong endpoint URL) would
+    # silently pass through and confuse the agent downstream.
+    if not isinstance(cloud_response.get("content"), list):
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error": (
+                    "Upstream returned unexpected response shape "
+                    f"(missing 'content' list): {json.dumps(cloud_response)[:500]}"
+                )
+            },
+        )
+
+    log_event(
+        "proxy_anthropic_response",
+        id=cloud_response.get("id", "?"),
+        model=cloud_response.get("model", "?"),
+        stop_reason=cloud_response.get("stop_reason", "?"),
+        content_blocks=len(cloud_response.get("content", [])),
+        input_tokens=(cloud_response.get("usage") or {}).get("input_tokens", "?"),
+        output_tokens=(cloud_response.get("usage") or {}).get("output_tokens", "?"),
+        response_bytes=len(json.dumps(cloud_response)),
+    )
+
     # Restore placeholders in response content blocks.
-    if combined_reverse_map and "content" in cloud_response:
+    if combined_reverse_map:
         for block in cloud_response["content"]:
             if block.get("type") == "text" and "text" in block:
                 block["text"] = restore(block["text"], combined_reverse_map)

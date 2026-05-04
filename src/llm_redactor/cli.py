@@ -30,7 +30,11 @@ def _apply_detection_config(cfg: Config) -> None:
 @app.command()
 def serve(
     port: int = typer.Option(7789, help="HTTP proxy port"),
+    host: str = typer.Option("127.0.0.1", "--host", help="HTTP bind host"),
     config_path: str = typer.Option("llm_redactor.yaml", "--config", help="Config file path"),
+    upstream: str | None = typer.Option(
+        None, "--upstream", help="Override the cloud upstream URL"
+    ),
 ) -> None:
     """Start the llm-redactor HTTP proxy."""
     import uvicorn
@@ -39,14 +43,17 @@ def serve(
 
     cfg = load_config(Path(config_path))
     cfg.transport.http_port = port
+    if upstream:
+        cfg.cloud_target.endpoint = upstream
+        console.print(f"[dim]Upstream override: {upstream}[/dim]")
     _apply_detection_config(cfg)
     configure(cfg)
     configure_logging()
 
-    console.print(f"[bold]llm-redactor[/bold] proxy on port {port}")
+    console.print(f"[bold]llm-redactor[/bold] proxy on {host}:{port}")
     uvicorn.run(
         "llm_redactor.transport.http_proxy:app",
-        host="127.0.0.1",
+        host=host,
         port=port,
         log_level="info",
     )
