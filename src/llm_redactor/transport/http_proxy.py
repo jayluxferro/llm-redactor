@@ -290,7 +290,14 @@ async def _forward_openai_transparent(
             except Exception:
                 text = f"(undecodable body, {len(e.response.content)} bytes)"
             err_body = {"error": text}
-        return JSONResponse(status_code=e.response.status_code, content=err_body)
+        resp_headers: dict[str, str] = {}
+        if ra := e.response.headers.get("retry-after"):
+            resp_headers["retry-after"] = ra
+        return JSONResponse(
+            status_code=e.response.status_code,
+            content=err_body,
+            headers=resp_headers,
+        )
     except (httpx.ConnectError, httpx.TimeoutException) as e:
         return JSONResponse(
             status_code=502,
@@ -429,7 +436,8 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
             outgoing, config.cloud_target, upstream_headers=upstream_headers
         )
     except httpx.HTTPStatusError as e:
-        # Pass through the upstream status code and body instead of masking as 502.
+        # Pass through the upstream status code, body, and rate-limit headers
+        # so the agent knows when to retry instead of getting a generic 502.
         try:
             err_body = e.response.json()
         except Exception:
@@ -438,7 +446,14 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
             except Exception:
                 text = f"(undecodable body, {len(e.response.content)} bytes)"
             err_body = {"error": text}
-        return JSONResponse(status_code=e.response.status_code, content=err_body)
+        resp_headers: dict[str, str] = {}
+        if ra := e.response.headers.get("retry-after"):
+            resp_headers["retry-after"] = ra
+        return JSONResponse(
+            status_code=e.response.status_code,
+            content=err_body,
+            headers=resp_headers,
+        )
     except httpx.TimeoutException as e:
         return JSONResponse(
             status_code=504,
