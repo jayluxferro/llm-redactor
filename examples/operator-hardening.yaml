@@ -18,7 +18,7 @@ pipeline:
 
 transport:
   tools_policy: refuse   # or bypass to allow tools without redaction
-  mcp_session_cap: 2000
+  mcp_session_cap: 10000
 
 cloud_target:
   endpoint: https://api.openai.com/v1

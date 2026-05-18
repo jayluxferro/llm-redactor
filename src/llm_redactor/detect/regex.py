@@ -82,8 +82,11 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     "mailgun_key": re.compile(r"\bkey-[0-9a-zA-Z]{32}\b"),
     "npm_token": re.compile(r"\bnpm_[A-Za-z0-9]{36}\b"),
     "pypi_token": re.compile(r"\bpypi-[A-Za-z0-9\-_]{50,}\b"),
+    # Require "heroku" context — bare UUID pattern matches too many false positives
+    # (session IDs, request IDs, correlation IDs, etc.)
     "heroku_api_key": re.compile(
-        r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+        r"(?i)heroku[_\-]?(?:api[_\-]?)?(?:key|token)[\s]*[=:\s]+['\"]?"
+        r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})['\"]?"
     ),
     # ── Generic patterns ──────────────────────────────────────────────────
     "generic_api_key": re.compile(

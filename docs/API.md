@@ -94,6 +94,40 @@ SSE `delta.content` chunks before they reach the client.
 Anthropic Messages API shape: redacts string or text-block content, forwards to
 `cloud_target`, restores in the response. `stream` is forced off in this handler.
 
+### `POST /v1/redactor/detect`
+
+Detection-only endpoint for external consumers (e.g. the Burp Suite plugin).
+Runs the full pipeline (regex + optional NER) on a single text string and returns
+the detected spans without redacting or forwarding anything.
+
+**Request**
+
+```json
+{"text": "Call Alice at alice@example.com — her key is sk-proj-abc123..."}
+```
+
+**Response** — array of span objects:
+
+```json
+[
+  {"start": 9,  "end": 26, "kind": "email",         "confidence": 1.0,  "text": "alice@example.com",   "source": "regex"},
+  {"start": 43, "end": 63, "kind": "openai_api_key", "confidence": 1.0,  "text": "sk-proj-abc123...",   "source": "regex"},
+  {"start": 0,  "end": 5,  "kind": "PERSON",         "confidence": 0.91, "text": "Alice",               "source": "ner"}
+]
+```
+
+Empty text → `[]` (HTTP 200).
+
+**Primary use-case — Burp plugin NER endpoint**
+
+Point the Burp plugin's **NER endpoint** field at:
+```
+http://localhost:7789/v1/redactor/detect
+```
+
+The plugin will POST each text field to this URL and merge the returned spans
+with its own regex results before redacting.
+
 ### `GET /v1/redactor/stats`
 
 Pipeline counters (requests, detections, refusals).

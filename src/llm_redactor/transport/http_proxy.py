@@ -507,6 +507,49 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
 # --------------- Shared endpoints ---------------
 
 
+@app.post("/v1/redactor/detect")
+async def redactor_detect(request: Request) -> JSONResponse:
+    """Detection endpoint for external consumers (e.g. the Burp plugin).
+
+    Runs the full detection pipeline (regex + NER if enabled) and returns
+    all sensitive spans found in the submitted text.
+
+    Request body:  {"text": "..."}
+    Response:      [{"start": 0, "end": 5, "kind": "person",
+                     "confidence": 0.92, "text": "Alice", "source": "ner"}]
+
+    This is the endpoint you point the Burp plugin's NER endpoint field at:
+        http://localhost:7789/v1/redactor/detect
+    """
+    raw = await request.body()
+    if not raw:
+        return JSONResponse(content=[])
+    try:
+        body: dict[str, Any] = json.loads(raw)
+    except json.JSONDecodeError:
+        return JSONResponse(content=[])
+    text: str = body.get("text", "")
+    if not text:
+        return JSONResponse(content=[])
+
+    pipeline = _get_pipeline()
+    spans = await pipeline.detect_spans(text)
+
+    return JSONResponse(
+        content=[
+            {
+                "start": s.start,
+                "end": s.end,
+                "kind": s.kind,
+                "confidence": s.confidence,
+                "text": s.text,
+                "source": s.source,
+            }
+            for s in spans
+        ]
+    )
+
+
 @app.get("/v1/redactor/stats")
 async def redactor_stats() -> JSONResponse:
     """Aggregate counters since process start."""

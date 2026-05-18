@@ -140,7 +140,7 @@ transport:
   http: true
   http_port: 7789
   tools_policy: bypass   # bypass | refuse — tool/function payloads skip redaction
-  mcp_session_cap: 2000  # MCP scrub sessions; LRU eviction when full
+  mcp_session_cap: 10000  # MCP scrub sessions; LRU eviction when full
 
 local_model:
   backend: ollama
@@ -193,3 +193,19 @@ for the duration of a single request. If the process crashes mid-
 request, the map is lost and the response can't be de-redacted. That
 is intentional: on-disk reverse maps would be a leakage channel
 worse than the one we're trying to prevent.
+
+## Burp Suite extension (`burp-plugin/`)
+
+A Kotlin port of the Option B pipeline runs inside Burp's proxy layer for
+Cursor Connect-RPC and OpenAI-compatible JSON. It shares regex categories and
+optional NER/LLM validation with the Python proxy but adds:
+
+- **Schema-blind protobuf** — wire-format walker with nested sub-message recursion
+  (depth cap 64), packed length-delimited repeats, UTF-8 heuristics, no per-field size cap.
+- **Compression** — gzip, deflate, brotli, zstd, and Unix compress on request bodies.
+- **Outbound-only default** — responses pass through verbatim so agent tool/file payloads stay exact.
+- **Dual-index sessions** — SHA-256 fingerprints of original and redacted bodies for reliable restore.
+- **Activity UI** — ring-buffer log, Live/Paused pill, configurable session and log caps.
+
+Build: `cd burp-plugin && ./gradlew shadowJar` → `build/libs/burp-llm-redactor.jar`.
+Details: [`burp-plugin/README.md`](../burp-plugin/README.md).

@@ -124,7 +124,7 @@ class TransportConfig:
     # refuse: reject with 422 so nothing hits the cloud without redaction.
     tools_policy: str = "bypass"
     # Cap in-memory MCP scrub sessions (oldest evicted; restore then fails safely).
-    mcp_session_cap: int = 2000
+    mcp_session_cap: int = 10_000
 
 
 @dataclass

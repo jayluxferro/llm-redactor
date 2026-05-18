@@ -28,3 +28,20 @@ jobs:
 
       - name: Static types (mypy)
         run: uv run mypy
+
+  burp-plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Test and build Burp extension
+        working-directory: burp-plugin
+        run: |
+          chmod +x gradlew
+          ./gradlew test shadowJar --no-daemon

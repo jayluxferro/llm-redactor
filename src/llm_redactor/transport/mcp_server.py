@@ -44,7 +44,7 @@ _sessions: OrderedDict[str, dict[str, str]] = OrderedDict()
 
 
 def _session_cap() -> int:
-    return _config.transport.mcp_session_cap if _config else 2000
+    return _config.transport.mcp_session_cap if _config else 10_000
 
 
 def _remember_session(session_id: str, reverse_map: dict[str, str]) -> None:

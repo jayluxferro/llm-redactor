@@ -1,0 +1,59 @@
+# Fully local: Ollama for chat AND for NER validation.
+# No data ever leaves the machine — `cloud_target` is Ollama's
+# own OpenAI-compatible endpoint.
+#
+# Run:
+#   ollama pull llama3.2:3b
+#   uv run --native-tls python -m llm_redactor.cli serve --config examples/ollama-only.yaml
+#
+# Burp plugin → set NER endpoint to:
+#   http://localhost:7789/v1/redactor/detect
+
+local_model:
+  backend: ollama
+  endpoint: http://127.0.0.1:11434
+  chat_model: llama3.2:3b           # used by llm_validation + opt_c rephrase
+  ner_confidence_floor: 0.5
+  ner_labels_to_ignore:
+    - CARDINAL
+    - MONEY
+    - ORDINAL
+    - QUANTITY
+    - PRODUCT
+    - WORK_OF_ART
+    - LANGUAGE
+    - EVENT
+
+pipeline:
+  placeholder_request_tag: false
+  llm_validation:
+    enabled: true                   # second-pass NER false-positive filter via Ollama
+    model: ""                       # "" = reuse local_model.chat_model
+  opt_a_local_only:
+    enabled: true                   # keep everything on-host
+  opt_b_redact:
+    enabled: true
+    strict: false
+  opt_c_rephrase:
+    enabled: false
+    require_validator_pass: true
+  opt_h_dp_noise:
+    enabled: false
+    epsilon: 4.0
+
+policy:
+  strict_refuse_on_unknown_sensitive: false
+  categories:
+    - pii
+    - secret
+    - org_identifier
+
+# Upstream "cloud" target is Ollama itself, via its OpenAI-compat layer.
+# Set OPENAI_API_KEY=ollama (any value — Ollama ignores it).
+cloud_target:
+  backend: openai_compat
+  endpoint: http://127.0.0.1:11434/v1
+  api_key_env: OPENAI_API_KEY
+
+transport:
+  http_port: 7789
