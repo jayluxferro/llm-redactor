@@ -83,29 +83,8 @@ object TransportLogic {
         return EncodedBody(bytes, stripContentEncoding = false)
     }
 
-    fun restoreJsonBody(body: String, map: Map<String, String>): String {
-        val obj = JSONObject(body)
-        obj.optJSONArray("choices")?.let { choices ->
-            for (i in 0 until choices.length()) {
-                choices.getJSONObject(i).optJSONObject("message")?.let { msg ->
-                    msg.optString("content", null)
-                        ?.let { msg.put("content", Restorer.restore(it, map)) }
-                }
-            }
-            return obj.toString()
-        }
-        obj.optJSONArray("content")?.let { content ->
-            for (i in 0 until content.length()) {
-                val blk = content.getJSONObject(i)
-                if (blk.optString("type") == "text") {
-                    blk.optString("text", null)
-                        ?.let { blk.put("text", Restorer.restore(it, map)) }
-                }
-            }
-            return obj.toString()
-        }
-        return body
-    }
+    fun restoreJsonBody(body: String, map: Map<String, String>): String =
+        JsonTree.restoreBody(body, map)
 
     /**
      * SSE placeholder restoration with LCP (mirrors Python http_proxy.py).

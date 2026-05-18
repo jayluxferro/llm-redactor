@@ -206,6 +206,7 @@ optional NER/LLM validation with the Python proxy but adds:
 - **Outbound-only default** — responses pass through verbatim so agent tool/file payloads stay exact.
 - **Dual-index sessions** — SHA-256 fingerprints of original and redacted bodies for reliable restore.
 - **Activity UI** — ring-buffer log, Live/Paused pill, configurable session and log caps.
+- **JSON tree walk** — all string fields on outbound and optional inbound restore (OTLP, chat).
 
 Build: `cd burp-plugin && ./gradlew shadowJar` → `build/libs/burp-llm-redactor.jar`.
 Details: [`burp-plugin/README.md`](../burp-plugin/README.md).

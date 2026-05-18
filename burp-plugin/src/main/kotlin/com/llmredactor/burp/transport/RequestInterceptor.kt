@@ -36,8 +36,8 @@ class RequestInterceptor(
             return ProxyRequestReceivedAction.continueWith(interceptedRequest)
 
         val ct = interceptedRequest.headerValue("Content-Type") ?: ""
-        val format = BodyFormatDetector.detect(ct, path)
-        if (format == BodyFormat.SKIP || format == BodyFormat.UNSUPPORTED)
+        val format = BodyFormatDetector.detect(ct)
+        if (format == BodyFormat.UNSUPPORTED)
             return ProxyRequestReceivedAction.continueWith(interceptedRequest)
 
         val ce = interceptedRequest.headerValue("Content-Encoding") ?: ""

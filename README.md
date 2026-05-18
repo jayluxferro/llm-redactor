@@ -72,7 +72,7 @@ uv sync
 
 ## Usage
 
-There are four ways to use llm-redactor depending on your setup.
+There are five ways to use llm-redactor depending on your setup.
 
 ### 1. CLI (try it out)
 
@@ -239,7 +239,33 @@ Agent                          llm-redactor                Cloud LLM
 }
 ```
 
-### 4. Claude Code hook (automatic warnings)
+### 4. Burp Suite extension (proxy-layer redaction)
+
+For **Cursor Connect-RPC**, OpenAI/Anthropic JSON, and **OTLP** (`/v1/traces`) traffic
+that already flows through Burp, load the Kotlin extension instead of (or in addition
+to) the Python HTTP proxy:
+
+```bash
+cd burp-plugin
+./gradlew shadowJar
+# Install build/libs/burp-llm-redactor.jar in Burp → Extensions → Add
+```
+
+Point your browser or Cursor at Burp’s proxy listener. The extension redacts **outbound**
+bodies only by default (responses pass through so agent tool/file payloads stay exact).
+Same regex/NER pipeline as the Python proxy, plus schema-blind protobuf for Cursor.
+
+| Topic | Detail |
+|--------|--------|
+| Full docs | [`burp-plugin/README.md`](burp-plugin/README.md) |
+| Build | `./gradlew test shadowJar` (CI runs this on every push) |
+| NER backend | Optional: point Settings → NER endpoint at `http://localhost:7789/v1/redactor/detect` while the Python proxy is running |
+
+**Do not** stack Burp redaction on top of an already-scrubbed `OPENAI_API_BASE` pointed
+at the llm-redactor proxy unless you intend to — restrict Burp target hosts or disable
+one layer.
+
+### 5. Claude Code hook (automatic warnings)
 
 Install a pre-tool hook that warns when sensitive content is about
 to leave through any tool. Add to `~/.claude/settings.json`:

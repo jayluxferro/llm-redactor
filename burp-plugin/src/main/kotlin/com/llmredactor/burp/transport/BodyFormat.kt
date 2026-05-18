@@ -4,14 +4,12 @@ package com.llmredactor.burp.transport
 enum class BodyFormat {
     JSON,
     CONNECT_PROTO,
-    /** Reserved for explicit pass-through (none configured by default). */
-    SKIP,
     UNSUPPORTED,
 }
 
 object BodyFormatDetector {
 
-    fun detect(contentType: String, path: String): BodyFormat {
+    fun detect(contentType: String): BodyFormat {
         val ct = contentType.lowercase()
         return when {
             ct.contains("application/json") && !ct.contains("connect") -> BodyFormat.JSON

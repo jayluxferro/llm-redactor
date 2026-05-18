@@ -31,7 +31,7 @@ object BodyProcessor {
         contentEncoding: String,
         pipeline: RedactionPipeline,
     ): List<Span> {
-        if (rawBytes.isEmpty() || format == BodyFormat.SKIP || format == BodyFormat.UNSUPPORTED) {
+        if (rawBytes.isEmpty() || format == BodyFormat.UNSUPPORTED) {
             return emptyList()
         }
         val http = ConnectProtoCodec.decodeHttpBody(rawBytes, contentEncoding)
@@ -49,7 +49,7 @@ object BodyProcessor {
         pipeline: RedactionPipeline,
         tag: String?,
     ): RedactOutcome? {
-        if (rawBytes.isEmpty() || format == BodyFormat.SKIP || format == BodyFormat.UNSUPPORTED) return null
+        if (rawBytes.isEmpty() || format == BodyFormat.UNSUPPORTED) return null
 
         val http = ConnectProtoCodec.decodeHttpBody(rawBytes, contentEncoding)
         val inner = when (format) {
@@ -68,13 +68,15 @@ object BodyProcessor {
         reverseMap: Map<String, String>,
     ): ByteArray? {
         if (rawBytes.isEmpty() || reverseMap.isEmpty()) return null
-        if (format == BodyFormat.SKIP || format == BodyFormat.UNSUPPORTED) return null
+        if (format == BodyFormat.UNSUPPORTED) return null
 
         val http = ConnectProtoCodec.decodeHttpBody(rawBytes, contentEncoding)
         val inner = when (format) {
             BodyFormat.JSON -> {
                 val text = String(http.bytes, Charsets.UTF_8)
-                TransportLogic.restoreJsonBody(text, reverseMap).toByteArray(Charsets.UTF_8)
+                TransportLogic.restoreJsonBody(text, reverseMap)
+                    .let { TransportLogic.fixSurrogates(it) }
+                    .toByteArray(Charsets.UTF_8)
             }
             BodyFormat.CONNECT_PROTO -> restoreConnectProto(http.bytes, reverseMap)
             else -> return null
@@ -88,28 +90,11 @@ object BodyProcessor {
         val bodyStr = String(bodyBytes, Charsets.UTF_8)
         if (bodyStr.isBlank()) return emptyList()
         return try {
-            collectJsonSpansFromValue(JSONObject(bodyStr), pipeline)
+            JsonTree.collectSpans(JSONObject(bodyStr), pipeline)
         } catch (_: Exception) {
             emptyList()
         }
     }
-
-    private fun collectJsonSpansFromValue(value: Any?, pipeline: RedactionPipeline): List<Span> =
-        when (value) {
-            null, JSONObject.NULL -> emptyList()
-            is String -> pipeline.detectSpans(value)
-            is JSONObject -> buildList {
-                for (key in value.keys()) {
-                    addAll(collectJsonSpansFromValue(value.get(key), pipeline))
-                }
-            }
-            is JSONArray -> buildList {
-                for (i in 0 until value.length()) {
-                    addAll(collectJsonSpansFromValue(value.get(i), pipeline))
-                }
-            }
-            else -> emptyList()
-        }
 
     private fun collectProtoSpans(bodyBytes: ByteArray, pipeline: RedactionPipeline): List<Span> {
         val all = mutableListOf<Span>()

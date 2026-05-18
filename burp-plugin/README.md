@@ -83,7 +83,7 @@ across Burp versions). It is never written to disk.
 
 | Format | `Content-Type` (typical) | Notes |
 |---|---|---|
-| OpenAI / Anthropic JSON | `application/json` | `messages[]` text and content blocks |
+| JSON APIs (chat, OTLP, etc.) | `application/json` | All string fields walked recursively |
 | OpenAI SSE (restore opt-in) | `text/event-stream` | Buffered by Burp; LCP delta restore |
 | Cursor / Connect-RPC | `application/proto`, `application/connect+proto` | Unary and framed protobuf; path prefix `/aiserver.v1.` |
 | OTLP traces | `application/json`, `application/x-protobuf` | `POST /v1/traces` — JSON tree walk or schema-blind protobuf |
@@ -317,9 +317,9 @@ Regex detections use confidence `1.0`; strict mode mainly affects **NER** spans.
 ### Restore placeholders in responses
 
 **Off by default.** When enabled, the response handler replaces `⟨…⟩` placeholders
-in JSON, SSE, or Connect/protobuf bodies using the reverse map from the paired
-request. When disabled (recommended for agents), responses are **not modified** —
-only the in-memory session entry is removed.
+in JSON (full tree walk), SSE, or Connect/protobuf bodies using the reverse map
+from the paired request. When disabled (recommended for agents), responses are
+**not modified** — only the in-memory session entry is removed.
 
 ### Placeholder tag
 
@@ -663,9 +663,10 @@ back to regex-only for that request.
    PII from the model. Optional restore only swaps known placeholders from the
    paired request.
 
-2. **JSON `messages[]` focus for OpenAI-style APIs.** Tool and function payloads
-   follow **Tools policy** (`bypass` forwards unchanged; `refuse` drops the request).
-   Tool *schemas* in JSON are not deeply redacted — keep secrets out of definitions.
+2. **JSON string walk.** Every string value in a JSON body is scanned (chat
+   `messages[]`, OTLP `stringValue`, nested objects, arrays). Requests with top-level
+   `tools` or `functions` follow **Tools policy** (`bypass` forwards unchanged;
+   `refuse` drops the whole request).
 
 3. **Protobuf is schema-blind.** Nested sub-messages and packed string/bytes repeats
    are walked; UTF-8 text uses heuristics. **Packed numeric** (varint) repeats and
@@ -789,7 +790,8 @@ burp-plugin/
     │   └── RedactionPipeline.kt      # detect → filter → redact per text field
     │
     ├── transport/
-    │   ├── BodyFormat.kt             # JSON / Connect / SKIP detection
+    │   ├── BodyFormat.kt             # JSON / Connect format detection
+    │   ├── JsonTree.kt               # Recursive JSON string walk / restore
     │   ├── BodyProcessor.kt          # Unified redact + optional restore
     │   ├── ConnectProtoCodec.kt      # Connect framing + HTTP gzip/deflate
     │   ├── ProtobufRedactor.kt       # Schema-blind string-field walk

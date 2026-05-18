@@ -50,7 +50,7 @@ class ResponseInterceptor(
         return try {
             val ct = interceptedResponse.headerValue("Content-Type") ?: ""
             val ceHeader = interceptedResponse.headerValue("Content-Encoding") ?: ""
-            val format = BodyFormatDetector.detect(ct, path)
+            val format = BodyFormatDetector.detect(ct)
             val rawBytes = interceptedResponse.body().getBytes()
 
             if (rawBytes.isEmpty()) return strip(interceptedResponse)
