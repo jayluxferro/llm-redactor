@@ -31,7 +31,7 @@ from ..config import Config, load_config
 from ..detect.orchestrator import detect_all, detect_all_validated
 from ..detect.types import Span, filter_by_categories
 from ..observability import log_event
-from ..redact.placeholder import redact
+from ..redact.placeholder import PlaceholderGenerator, redact
 from ..redact.restore import restore
 
 server = Server("llm-redactor")
@@ -246,6 +246,7 @@ async def _handle_llm_chat(arguments: dict[str, Any]) -> list[TextContent]:
     total_detections = 0
 
     ph_tag = secrets.token_hex(4) if _config.pipeline.placeholder_request_tag else None
+    gen = PlaceholderGenerator(session_tag=ph_tag)
 
     for msg in messages:
         content = msg.get("content", "")
@@ -257,7 +258,7 @@ async def _handle_llm_chat(arguments: dict[str, Any]) -> list[TextContent]:
         total_detections += len(spans)
 
         if spans:
-            result = redact(content, spans, session_tag=ph_tag)
+            result = redact(content, spans, gen=gen)
             combined_reverse_map.update(result.reverse_map)
             redacted_messages.append({**msg, "content": result.redacted_text})
         else:

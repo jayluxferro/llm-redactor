@@ -19,7 +19,7 @@ from ..config import Config
 from ..detect.types import Span
 from ..observability import log_event
 from ..pipeline.option_b import OptionBPipeline, RefusalError
-from ..redact.placeholder import redact
+from ..redact.placeholder import PlaceholderGenerator, redact
 from ..redact.restore import restore
 from ..transport.cloud import (
     forward_anthropic_messages,
@@ -367,6 +367,7 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
     ph_tag = pipeline.request_placeholder_tag()
 
     outgoing_messages = []
+    gen = PlaceholderGenerator(session_tag=ph_tag)
     for msg in messages:
         content = msg.get("content", "")
         # Anthropic supports string content or list of content blocks.
@@ -374,7 +375,7 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
             spans = await pipeline.detect_spans(content)
             all_detections.extend(spans)
             if spans:
-                result = redact(content, spans, session_tag=ph_tag)
+                result = redact(content, spans, gen=gen)
                 combined_reverse_map.update(result.reverse_map)
                 outgoing_messages.append({**msg, "content": result.redacted_text})
             else:
@@ -387,7 +388,7 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
                     spans = await pipeline.detect_spans(block["text"])
                     all_detections.extend(spans)
                     if spans:
-                        result = redact(block["text"], spans, session_tag=ph_tag)
+                        result = redact(block["text"], spans, gen=gen)
                         combined_reverse_map.update(result.reverse_map)
                         new_blocks.append({**block, "text": result.redacted_text})
                     else:

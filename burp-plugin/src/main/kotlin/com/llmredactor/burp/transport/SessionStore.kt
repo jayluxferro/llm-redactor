@@ -17,31 +17,40 @@ class SessionStore(config: PluginConfig) {
 
     @Volatile private var cap: Int = config.sessionCap
 
+    /** fingerprint → sessionId.  Fingerprint = SHA-256 of (host + path + body bytes). */
+    private val fingerprints: MutableMap<String, String> = ConcurrentHashMap()
+
+    /** sessionId → set of fingerprint keys.  Used to purge fingerprints when LRU evicts. */
+    private val sessionFingerprints: MutableMap<String, MutableSet<String>> = ConcurrentHashMap()
+
     private val store: MutableMap<String, Map<String, String>> =
         Collections.synchronizedMap(
             object : LinkedHashMap<String, Map<String, String>>(16, 0.75f, true) {
                 override fun removeEldestEntry(
                     eldest: MutableMap.MutableEntry<String, Map<String, String>>
-                ): Boolean = size > cap
+                ): Boolean {
+                    if (size <= cap) return false
+                    // Prune fingerprint entries for the session being evicted.
+                    sessionFingerprints.remove(eldest.key)?.forEach { fp ->
+                        fingerprints.remove(fp)
+                    }
+                    evictions++
+                    return true
+                }
             }
         )
-
-    /** fingerprint → sessionId.  Fingerprint = SHA-256 of (host + path + body bytes). */
-    private val fingerprints: MutableMap<String, String> = ConcurrentHashMap()
 
     @Volatile var evictions: Int = 0
         private set
 
     fun put(sessionId: String, reverseMap: Map<String, String>) {
-        val prevSize = store.size
         store[sessionId] = reverseMap
-        if (store.size <= prevSize && prevSize >= cap) evictions++
     }
 
     /** Like put(), but also indexes the session by a request fingerprint. */
     fun putWithFingerprint(sessionId: String, fingerprint: String, reverseMap: Map<String, String>) {
         put(sessionId, reverseMap)
-        fingerprints[fingerprint] = sessionId
+        addFingerprint(sessionId, fingerprint)
     }
 
     /**
@@ -58,16 +67,25 @@ class SessionStore(config: PluginConfig) {
     ) {
         put(sessionId, reverseMap)
         for (fp in fingerprintKeys) {
-            if (fp.isNotEmpty()) fingerprints[fp] = sessionId
+            if (fp.isNotEmpty()) addFingerprint(sessionId, fp)
         }
     }
 
+    private fun addFingerprint(sessionId: String, fp: String) {
+        fingerprints[fp] = sessionId
+        sessionFingerprints.getOrPut(sessionId) { Collections.synchronizedSet(mutableSetOf()) }.add(fp)
+    }
+
     /** One-shot consume by sessionId. */
-    fun remove(sessionId: String): Map<String, String>? = store.remove(sessionId)
+    fun remove(sessionId: String): Map<String, String>? {
+        sessionFingerprints.remove(sessionId)?.forEach { fp -> fingerprints.remove(fp) }
+        return store.remove(sessionId)
+    }
 
     /** One-shot consume by fingerprint — used by the response handler. */
     fun removeByFingerprint(fingerprint: String): Map<String, String>? {
         val sessionId = fingerprints.remove(fingerprint) ?: return null
+        sessionFingerprints.remove(sessionId)?.forEach { fp -> fingerprints.remove(fp) }
         return store.remove(sessionId)
     }
 
@@ -76,6 +94,7 @@ class SessionStore(config: PluginConfig) {
     fun clear() {
         store.clear()
         fingerprints.clear()
+        sessionFingerprints.clear()
         evictions = 0
     }
 

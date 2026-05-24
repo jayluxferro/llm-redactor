@@ -41,8 +41,16 @@ data class RedactionResult(
  */
 fun redact(text: String, spans: List<Span>, sessionTag: String? = null): RedactionResult {
     if (spans.isEmpty()) return RedactionResult(text, emptyMap(), emptyList())
+    return redact(text, spans, PlaceholderGenerator(sessionTag))
+}
 
-    val gen = PlaceholderGenerator(sessionTag)
+/**
+ * Same as above but uses an existing [PlaceholderGenerator] so counters stay
+ * consistent across multiple [redact] calls within the same request.
+ */
+fun redact(text: String, spans: List<Span>, gen: PlaceholderGenerator): RedactionResult {
+    if (spans.isEmpty()) return RedactionResult(text, emptyMap(), emptyList())
+
     val sortedSpans = spans.sortedByDescending { it.start }
 
     var result = text

@@ -57,13 +57,19 @@ def redact(
     spans: list[Span],
     *,
     session_tag: str | None = None,
+    gen: PlaceholderGenerator | None = None,
 ) -> RedactionResult:
     """Replace detected spans with placeholders, returning the redacted
-    text and the reverse map needed for restoration."""
+    text and the reverse map needed for restoration.
+
+    Pass ``gen`` when redacting multiple texts within a single request
+    so placeholder counters stay consistent (e.g. ``⟨EMAIL_1⟩`` is the
+    same original everywhere).
+    """
     if not spans:
         return RedactionResult(redacted_text=text, reverse_map={}, placeholders=[])
 
-    gen = PlaceholderGenerator(session_tag=session_tag)
+    gen = gen or PlaceholderGenerator(session_tag=session_tag)
 
     # Sort spans by start position descending so replacements don't shift offsets.
     sorted_spans = sorted(spans, key=lambda s: s.start, reverse=True)

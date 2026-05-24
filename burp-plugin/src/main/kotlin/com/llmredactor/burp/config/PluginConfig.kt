@@ -92,7 +92,7 @@ class PluginConfig(private val store: PersistedObject) {
         set(v) = store.setString(KEY_CATEGORIES, v.joinToString(","))
 
     var nerEndpoint: String
-        get() = store.getString(KEY_NER_ENDPOINT) ?: ""
+        get() = store.getString(KEY_NER_ENDPOINT) ?: "http://127.0.0.1:7789/v1/redactor/detect"
         set(v) = store.setString(KEY_NER_ENDPOINT, v)
 
     var strict: Boolean

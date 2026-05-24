@@ -97,8 +97,6 @@ class RequestInterceptor(
             }
 
             val sessionId = UUID.randomUUID().toString()
-            stats.requests.incrementAndGet()
-            stats.spansRedacted.addAndGet(outcome.summary.totalSpans.toLong())
 
             val redactedBytes = outcome.bytes
             val cesuAt = TransportLogic.scanForCesu8(redactedBytes)
@@ -106,6 +104,9 @@ class RequestInterceptor(
                 debugLog("ABORT: CESU-8 at $cesuAt on $host$path")
                 return ProxyRequestReceivedAction.continueWith(interceptedRequest)
             }
+
+            stats.requests.incrementAndGet()
+            stats.spansRedacted.addAndGet(outcome.summary.totalSpans.toLong())
 
             val fpOriginal = SessionStore.fingerprint(host, path, rawBytes)
             val fpRedacted = SessionStore.fingerprint(host, path, redactedBytes)

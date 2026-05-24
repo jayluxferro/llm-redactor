@@ -11,7 +11,7 @@ from ..config import Config
 from ..detect.orchestrator import detect_all, detect_all_validated
 from ..detect.types import Span, filter_by_categories
 from ..observability import log_event
-from ..redact.placeholder import RedactionResult, redact
+from ..redact.placeholder import PlaceholderGenerator, RedactionResult, redact
 from ..redact.restore import restore
 from ..transport.cloud import forward_chat_completion
 
@@ -121,6 +121,7 @@ class OptionBPipeline:
         outgoing = list(messages)
         redaction_results: dict[int, RedactionResult] = {}
         all_detections: list[Span] = []
+        gen = PlaceholderGenerator(session_tag=placeholder_tag)
 
         for i, msg in enumerate(messages):
             content = msg.get("content", "")
@@ -131,7 +132,7 @@ class OptionBPipeline:
             all_detections.extend(spans)
 
             if spans:
-                result = redact(content, spans, session_tag=placeholder_tag)
+                result = redact(content, spans, gen=gen)
                 redaction_results[i] = result
                 outgoing[i] = {**msg, "content": result.redacted_text}
 

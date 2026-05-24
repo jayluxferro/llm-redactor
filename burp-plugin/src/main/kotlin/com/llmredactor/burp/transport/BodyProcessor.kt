@@ -2,6 +2,7 @@ package com.llmredactor.burp.transport
 
 import com.llmredactor.burp.detect.Span
 import com.llmredactor.burp.pipeline.RedactionPipeline
+import com.llmredactor.burp.redact.PlaceholderGenerator
 import com.llmredactor.burp.redact.redact
 import org.json.JSONArray
 import org.json.JSONObject
@@ -119,9 +120,10 @@ object BodyProcessor {
         } catch (_: Exception) {
             return null
         }
+        val gen = PlaceholderGenerator(tag)
         val combined = mutableMapOf<String, String>()
         val kinds = mutableMapOf<String, Int>()
-        val redacted = redactJsonValue(body, pipeline, tag, combined, kinds) as? JSONObject ?: return null
+        val redacted = redactJsonValue(body, pipeline, gen, combined, kinds) as? JSONObject ?: return null
         if (combined.isEmpty()) return null
         val out = TransportLogic.fixSurrogates(redacted.toString()).toByteArray(Charsets.UTF_8)
         return JsonRedact(out, combined, Summary(combined.size, kinds))
@@ -130,13 +132,13 @@ object BodyProcessor {
     private fun redactJsonValue(
         value: Any?,
         pipeline: RedactionPipeline,
-        tag: String?,
+        gen: PlaceholderGenerator,
         combined: MutableMap<String, String>,
         kinds: MutableMap<String, Int>,
     ): Any? = when (value) {
         null, JSONObject.NULL -> value
         is String -> {
-            val r = redact(value, pipeline.detectSpans(value), tag)
+            val r = redact(value, pipeline.detectSpans(value), gen)
             combined.putAll(r.reverseMap)
             r.reverseMap.keys.forEach { ph -> kinds.merge(kindOf(ph), 1, Int::plus) }
             r.redactedText
@@ -144,14 +146,14 @@ object BodyProcessor {
         is JSONObject -> {
             val out = JSONObject()
             for (key in value.keys()) {
-                out.put(key, redactJsonValue(value.get(key), pipeline, tag, combined, kinds))
+                out.put(key, redactJsonValue(value.get(key), pipeline, gen, combined, kinds))
             }
             out
         }
         is JSONArray -> {
             val out = JSONArray()
             for (i in 0 until value.length()) {
-                out.put(redactJsonValue(value.get(i), pipeline, tag, combined, kinds))
+                out.put(redactJsonValue(value.get(i), pipeline, gen, combined, kinds))
             }
             out
         }
@@ -163,10 +165,11 @@ object BodyProcessor {
         pipeline: RedactionPipeline,
         tag: String?,
     ): JsonRedact? {
+        val gen = PlaceholderGenerator(tag)
         val wire = ConnectProtoCodec.parse(bodyBytes)
         val (redactedWire, reverse) = ConnectProtoCodec.redactPayloads(wire) { payload ->
             val (out, map) = ProtobufRedactor.redact(payload) { text ->
-                redact(text, pipeline.detectSpans(text), tag)
+                redact(text, pipeline.detectSpans(text), gen)
             }
             out to map
         }
