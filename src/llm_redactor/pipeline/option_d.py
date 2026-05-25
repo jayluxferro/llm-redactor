@@ -60,7 +60,7 @@ class OptionDPipeline:
         # Forward plaintext to TEE.
         cloud_response = await forward_to_tee(
             body,
-            attestation_url=attestation_url,
+            attestation=att,
             inference_url=inference_url,
         )
 

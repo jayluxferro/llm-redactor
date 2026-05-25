@@ -91,11 +91,12 @@ class OptionHPipeline:
                 if content:
                     msg["content"] = restore(content, combined_reverse_map)
 
-        # Leak audit.
+        # Leak audit: after redaction the original span text should never
+        # appear in the outgoing body. Non-zero = redaction failure.
         outgoing_text = " ".join(
             m.get("content", "") for m in h_messages if isinstance(m.get("content"), str)
         )
-        sensitive_sent = sum(1 for s in all_detections if s.text in outgoing_text)
+        survived = sum(1 for s in all_detections if s.text in outgoing_text)
 
         return OptionHPipelineResult(
             response=cloud_response,
@@ -106,6 +107,6 @@ class OptionHPipeline:
             leak_audit={
                 "outgoing_bytes": len(outgoing_text.encode()),
                 "sensitive_tokens_detected": len(all_detections),
-                "sensitive_tokens_sent": sensitive_sent,
+                "original_span_text_survived": survived,
             },
         )

@@ -25,8 +25,9 @@ TECHNICAL_TERM_PATTERNS = [
     r"\b(?:authentication|authorization|token|session|certificate|encryption)\b",
     r"\b(?:debug|error|exception|traceback|stack trace|segfault|timeout|deadlock)\b",
     r"\b(?:database|table|column|row|foreign key|primary key|constraint)\b",
-    # Code patterns (function calls, imports, etc.)
-    r"(?:def |class |import |from |SELECT |INSERT |UPDATE |DELETE |CREATE |ALTER )",
+    # Code patterns (function calls, imports, etc.) — \b prevents substring
+    # matches like "classify" matching "class ".
+    r"\b(?:def |class |import |from |SELECT |INSERT |UPDATE |DELETE |CREATE |ALTER )",
 ]
 
 

@@ -13,7 +13,7 @@ from typing import Any
 from ..config import Config
 from ..detect.orchestrator import detect_all
 from ..detect.types import Span, filter_by_categories
-from ..pipeline.option_a import classify
+from ..pipeline.option_a import answer_locally, classify
 from ..redact.placeholder import RedactionResult, redact
 from ..redact.restore import restore
 from ..transport.cloud import forward_chat_completion
@@ -70,7 +70,6 @@ class OptionABPipeline:
         if classification == "TRIVIAL":
             # Answer locally — nothing leaves the device.
             self._stats["routed_local"] += 1
-            from ..pipeline.option_a import answer_locally
 
             local_answer = await answer_locally(
                 text,
@@ -91,7 +90,7 @@ class OptionABPipeline:
                 leak_audit={
                     "outgoing_bytes": 0,
                     "sensitive_tokens_detected": 0,
-                    "sensitive_tokens_sent": 0,
+                    "original_span_text_survived": 0,
                 },
             )
 
@@ -135,10 +134,12 @@ class OptionABPipeline:
                 if content:
                     msg["content"] = restore(content, combined_reverse_map)
 
+        # Leak audit: after redaction the original span text should never
+        # appear in the outgoing body. Non-zero = redaction failure.
         outgoing_text = " ".join(
             m.get("content", "") for m in outgoing_messages if isinstance(m.get("content"), str)
         )
-        sensitive_sent = sum(1 for s in all_detections if s.text in outgoing_text)
+        survived = sum(1 for s in all_detections if s.text in outgoing_text)
 
         return OptionABPipelineResult(
             response=cloud_response,
@@ -149,6 +150,6 @@ class OptionABPipeline:
             leak_audit={
                 "outgoing_bytes": len(outgoing_text.encode()),
                 "sensitive_tokens_detected": len(all_detections),
-                "sensitive_tokens_sent": sensitive_sent,
+                "original_span_text_survived": survived,
             },
         )

@@ -82,19 +82,18 @@ async def verify_attestation(
 async def forward_to_tee(
     body: dict[str, Any],
     *,
-    attestation_url: str,
+    attestation: AttestationResult,
     inference_url: str,
     timeout: float = 120.0,
 ) -> dict[str, Any]:
-    """Verify attestation, then forward a chat-completion request.
+    """Forward a chat-completion request to the TEE inference endpoint.
 
-    Raises ``RuntimeError`` if attestation fails.
+    *attestation* must be a verified ``AttestationResult`` from
+    ``verify_attestation()``.  The attestation metadata is embedded
+    in the response as ``_tee_attestation`` for audit.
+
     Raises ``httpx.HTTPStatusError`` on non-2xx inference responses.
     """
-    att = await verify_attestation(attestation_url)
-    if not att.verified:
-        raise RuntimeError(f"TEE attestation failed: {att.error}")
-
     url = f"{inference_url.rstrip('/')}/chat/completions"
     headers = {"Content-Type": "application/json"}
 
@@ -104,7 +103,7 @@ async def forward_to_tee(
         result: dict[str, Any] = resp.json()
 
     result["_tee_attestation"] = {
-        "enclave_id": att.enclave_id,
-        "pcr_values": att.pcr_values,
+        "enclave_id": attestation.enclave_id,
+        "pcr_values": attestation.pcr_values,
     }
     return result
