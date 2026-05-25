@@ -83,7 +83,7 @@ async def test_pipeline_redacts_email(pipeline: OptionBPipeline):
     assert placeholder not in response_content
 
     # Leak audit should show zero leakage.
-    assert result.leak_audit["sensitive_tokens_sent"] == 0
+    assert result.leak_audit["original_span_text_survived"] == 0
     assert result.leak_audit["sensitive_tokens_detected"] >= 1
 
 
@@ -251,7 +251,7 @@ def test_http_proxy_redacts_and_restores(client: TestClient):
     content = data["choices"][0]["message"]["content"]
     assert "alice@example.org" in content
     assert data["redactor"]["options_applied"] == ["B"]
-    assert data["redactor"]["leak_audit"]["sensitive_tokens_sent"] == 0
+    assert data["redactor"]["leak_audit"]["original_span_text_survived"] == 0
 
 
 def test_http_proxy_stats(client: TestClient):
