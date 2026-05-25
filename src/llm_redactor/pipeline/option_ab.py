@@ -61,7 +61,7 @@ class OptionABPipeline:
         ollama_endpoint = self.config.local_model.endpoint
         ollama_model = self.config.local_model.chat_model
 
-        classification = await classify(
+        classification, _ = await classify(
             text,
             endpoint=ollama_endpoint,
             model=ollama_model,
