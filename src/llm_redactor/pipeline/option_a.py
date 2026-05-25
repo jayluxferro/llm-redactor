@@ -95,8 +95,12 @@ async def classify(
     endpoint: str = "http://127.0.0.1:11434",
     model: str = "llama3.2:3b",
     timeout: float = 15.0,
-) -> Classification:
-    """Classify a request as TRIVIAL or COMPLEX using a local model."""
+) -> tuple[Classification, str]:
+    """Classify a request as TRIVIAL or COMPLEX using a local model.
+
+    Returns (classification, raw_model_output).
+    Fail-open: returns ("COMPLEX", "") on any error.
+    """
     messages = list(CLASSIFIER_MESSAGES)
     messages.append(
         {
@@ -119,9 +123,9 @@ async def classify(
             resp.raise_for_status()
             data = resp.json()
             raw = data.get("message", {}).get("content", "")
-            return _parse_classification(raw)
+            return _parse_classification(raw), raw
     except Exception:
-        return "COMPLEX"
+        return "COMPLEX", ""
 
 
 async def answer_locally(
@@ -131,7 +135,11 @@ async def answer_locally(
     model: str = "llama3.2:3b",
     timeout: float = 60.0,
 ) -> str:
-    """Answer a request using the local model."""
+    """Answer a request using the local model.
+
+    Fail-open: returns empty string on any error so the caller can
+    fall back to the cloud pipeline.
+    """
     url = f"{endpoint.rstrip('/')}/api/chat"
     body = {
         "model": model,
@@ -139,11 +147,14 @@ async def answer_locally(
         "stream": False,
     }
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(url, json=body)
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("message", {}).get("content", "")
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(url, json=body)
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("message", {}).get("content", "")
+    except Exception:
+        return ""
 
 
 async def route(
@@ -155,23 +166,27 @@ async def route(
     """Classify and optionally answer locally.
 
     If TRIVIAL, answers with the local model (nothing leaves the device).
-    If COMPLEX, returns empty local_response — caller should proceed to cloud.
+    If COMPLEX or the local model fails, returns empty local_response —
+    caller should proceed to cloud.
     """
     import time
 
     t0 = time.perf_counter()
 
-    classification = await classify(text, endpoint=endpoint, model=model)
+    classification, raw_output = await classify(text, endpoint=endpoint, model=model)
 
     local_response = ""
     if classification == "TRIVIAL":
         local_response = await answer_locally(text, endpoint=endpoint, model=model)
+        if not local_response:
+            # Local model failed — fail open to cloud.
+            classification = "COMPLEX"
 
     elapsed = (time.perf_counter() - t0) * 1000
 
     return RouteResult(
         classification=classification,
         local_response=local_response,
-        classifier_raw=classification,
+        classifier_raw=raw_output,
         latency_ms=elapsed,
     )

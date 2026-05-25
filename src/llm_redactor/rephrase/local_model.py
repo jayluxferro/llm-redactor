@@ -55,7 +55,11 @@ async def rephrase(
     temperature: float = 0.3,
     timeout: float = 60.0,
 ) -> RephraseResult:
-    """Rephrase text using a local Ollama model to strip identifying details."""
+    """Rephrase text using a local Ollama model to strip identifying details.
+
+    Raises ValueError if the model returns an empty response (misconfigured
+    model, wrong endpoint, or the model refused to answer).
+    """
     url = f"{endpoint.rstrip('/')}/api/chat"
 
     body = {
@@ -76,6 +80,11 @@ async def rephrase(
         data = resp.json()
 
     rephrased = data.get("message", {}).get("content", "").strip()
+    if not rephrased:
+        raise ValueError(
+            f"Rephrase model returned empty response. "
+            f"Check that model '{model}' is available at {endpoint}."
+        )
     prompt_tokens = data.get("prompt_eval_count", 0)
     completion_tokens = data.get("eval_count", 0)
 
@@ -99,6 +108,13 @@ def rephrase_sync(
     """Synchronous wrapper for rephrase()."""
     import asyncio
 
-    return asyncio.run(
-        rephrase(text, endpoint=endpoint, model=model, temperature=temperature, timeout=timeout)
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(
+            rephrase(text, endpoint=endpoint, model=model, temperature=temperature, timeout=timeout)
+        )
+    raise RuntimeError(
+        "rephrase_sync() cannot be called from within a running event loop. "
+        "Use 'await rephrase(...)' instead."
     )

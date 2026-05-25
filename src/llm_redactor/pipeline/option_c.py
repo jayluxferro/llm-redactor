@@ -83,8 +83,8 @@ class OptionCPipeline:
             b_messages[i] = {**messages[i], "content": red_res.redacted_text}
 
         # Stage 2: Rephrase each user message (Option C).
-        rephrase_result: RephraseResult | None = None
-        validation: ValidationResult | None = None
+        rephrase_results: dict[int, RephraseResult] = {}
+        validations: dict[int, ValidationResult] = {}
         rephrase_used = False
         c_messages = list(b_messages)
 
@@ -99,17 +99,21 @@ class OptionCPipeline:
                 continue
 
             self._stats["rephrases"] += 1
-            reph_res = await rephrase(
-                content,
-                endpoint=ollama_endpoint,
-                model=ollama_model,
-            )
-            rephrase_result = reph_res
+            try:
+                reph_res = await rephrase(
+                    content,
+                    endpoint=ollama_endpoint,
+                    model=ollama_model,
+                )
+            except Exception:
+                self._stats["rephrase_rollbacks"] += 1
+                continue
+            rephrase_results[i] = reph_res
 
             # Stage 3: Validate the rephrase.
             require_pass = self.config.pipeline.opt_c_rephrase.require_validator_pass
             vr = validate_rephrase(content, reph_res.rephrased_text)
-            validation = vr
+            validations[i] = vr
 
             if vr.valid or not require_pass:
                 c_messages[i] = {**msg, "content": reph_res.rephrased_text}
@@ -139,26 +143,34 @@ class OptionCPipeline:
                 if content:
                     msg["content"] = restore(content, combined_reverse_map)
 
-        # Leak audit.
+        # Leak audit: count spans whose original text still appears in the
+        # outgoing body. After successful redaction + rephrasing this should
+        # always be 0 — any non-zero value indicates a redaction failure.
         outgoing_text = " ".join(
             m.get("content", "") for m in c_messages if isinstance(m.get("content"), str)
         )
-        sensitive_sent = sum(1 for s in all_detections if s.text in outgoing_text)
+        survived = sum(1 for s in all_detections if s.text in outgoing_text)
 
         options = ["B", "C"] if rephrase_used else ["B"]
         combined_redaction = next(iter(redaction_results.values()), None)
+        # Convenience: last rephrase/validation result for single-message callers.
+        _rr = rephrase_results
+        _val = validations
+        last_rephrase = next(reversed(_rr.values()), None) if _rr else None
+        last_validation = next(reversed(_val.values()), None) if _val else None
 
         return OptionCPipelineResult(
             response=cloud_response,
             detections=all_detections,
             redaction=combined_redaction,
-            rephrase_result=rephrase_result,
-            validation=validation,
+            rephrase_result=last_rephrase,
+            validation=last_validation,
             rephrase_used=rephrase_used,
             options_applied=options,
             leak_audit={
                 "outgoing_bytes": len(outgoing_text.encode()),
                 "sensitive_tokens_detected": len(all_detections),
-                "sensitive_tokens_sent": sensitive_sent,
+                "messages_rephrased": len(rephrase_results),
+                "original_span_text_survived": survived,
             },
         )
