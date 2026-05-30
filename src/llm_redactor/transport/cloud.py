@@ -123,6 +123,69 @@ async def forward_anthropic_messages(
         return _parse_json_response(resp, url)
 
 
+async def forward_anthropic_raw(
+    body_bytes: bytes,
+    config: CloudTargetConfig,
+    *,
+    timeout: float = 120.0,
+    upstream_headers: dict[str, str] | None = None,
+) -> tuple[bytes, int, dict[str, str]]:
+    """Forward raw request bytes to the Anthropic Messages endpoint.
+
+    Used when the request contains ``thinking`` or ``redacted_thinking``
+    blocks whose signatures Anthropic validates against the exact JSON
+    encoding it served — any json.loads/dumps round-trip breaks them.
+
+    Returns (body_bytes, status_code, response_headers).
+    """
+    api_key = os.environ.get(config.api_key_env, "")
+    url = f"{config.endpoint.rstrip('/')}/messages"
+
+    headers: dict[str, str] = dict(upstream_headers) if upstream_headers else {}
+    headers["content-type"] = "application/json"
+    if "anthropic-version" not in headers:
+        headers["anthropic-version"] = "2023-06-01"
+    if api_key and "x-api-key" not in headers and "authorization" not in headers:
+        headers["x-api-key"] = api_key
+
+    client_ua = headers.pop("user-agent", None)
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        headers={"user-agent": client_ua} if client_ua else {},
+    ) as client:
+        resp = await client.post(url, content=body_bytes, headers=headers)
+        return resp.content, resp.status_code, dict(resp.headers)
+
+
+async def forward_anthropic_raw_stream(
+    body_bytes: bytes,
+    config: CloudTargetConfig,
+    *,
+    timeout: float = 120.0,
+    upstream_headers: dict[str, str] | None = None,
+) -> AsyncIterator[bytes]:
+    """Stream variant of :func:`forward_anthropic_raw`."""
+    api_key = os.environ.get(config.api_key_env, "")
+    url = f"{config.endpoint.rstrip('/')}/messages"
+
+    headers: dict[str, str] = dict(upstream_headers) if upstream_headers else {}
+    headers["content-type"] = "application/json"
+    if "anthropic-version" not in headers:
+        headers["anthropic-version"] = "2023-06-01"
+    if api_key and "x-api-key" not in headers and "authorization" not in headers:
+        headers["x-api-key"] = api_key
+
+    client_ua = headers.pop("user-agent", None)
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        headers={"user-agent": client_ua} if client_ua else {},
+    ) as client:
+        async with client.stream("POST", url, content=body_bytes, headers=headers) as resp:
+            resp.raise_for_status()
+            async for chunk in resp.aiter_bytes():
+                yield chunk
+
+
 async def forward_anthropic_messages_stream(
     body: dict[str, Any],
     config: CloudTargetConfig,

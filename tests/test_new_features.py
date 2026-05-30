@@ -168,6 +168,90 @@ def test_anthropic_content_blocks_redaction():
     assert "redactor" in data
 
 
+def test_anthropic_thinking_block_bypasses_redaction():
+    """Requests with thinking blocks must reach upstream byte-identical.
+
+    Anthropic validates thinking-block signatures against the exact JSON
+    bytes it served — any json.loads/dumps round-trip in the redactor
+    breaks them.  When a thinking block is detected, the redactor must
+    skip its transform pipeline and forward raw bytes via
+    ``forward_anthropic_raw``.
+    """
+    from unittest.mock import patch
+
+    from llm_redactor.transport.http_proxy import app, configure
+
+    cfg = Config()
+    configure(cfg, use_ner=False)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    # Hand-craft the raw bytes so we can assert byte-identical forwarding.
+    raw_body = (
+        b'{"model":"claude-sonnet","max_tokens":100,"messages":'
+        b'[{"role":"user","content":"start"},'
+        b'{"role":"assistant","content":[{"type":"thinking",'
+        b'"thinking":"step one","signature":"sig-abc-123"}]},'
+        b'{"role":"user","content":"continue"}]}'
+    )
+
+    captured: dict = {}
+
+    async def fake_raw(body_bytes, config, *, timeout=120.0, upstream_headers=None):
+        captured["body"] = body_bytes
+        captured["headers"] = upstream_headers
+        return (b'{"id":"msg_x","type":"message","role":"assistant","content":[]}',
+                200, {"content-type": "application/json"})
+
+    with patch(
+        "llm_redactor.transport.http_proxy.forward_anthropic_raw",
+        side_effect=fake_raw,
+    ):
+        resp = client.post(
+            "/v1/messages",
+            content=raw_body,
+            headers={"content-type": "application/json", "x-api-key": "sk-test"},
+        )
+
+    assert resp.status_code == 200
+    # The upstream saw the exact bytes we sent — no JSON round-trip.
+    assert captured["body"] == raw_body
+    assert resp.headers.get("X-LLM-Redactor-Mode") == "signed-passthrough"
+
+
+def test_anthropic_redacted_thinking_also_bypasses():
+    """``redacted_thinking`` blocks (the encrypted variant) get the same treatment."""
+    from unittest.mock import patch
+
+    from llm_redactor.transport.http_proxy import app, configure
+
+    cfg = Config()
+    configure(cfg, use_ner=False)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    raw_body = (
+        b'{"model":"claude-sonnet","max_tokens":100,"messages":'
+        b'[{"role":"assistant","content":[{"type":"redacted_thinking",'
+        b'"data":"encrypted-blob-xyz"}]},'
+        b'{"role":"user","content":"go"}]}'
+    )
+
+    async def fake_raw(body_bytes, config, *, timeout=120.0, upstream_headers=None):
+        return b'{}', 200, {"content-type": "application/json"}
+
+    with patch(
+        "llm_redactor.transport.http_proxy.forward_anthropic_raw",
+        side_effect=fake_raw,
+    ):
+        resp = client.post(
+            "/v1/messages",
+            content=raw_body,
+            headers={"content-type": "application/json"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.headers.get("X-LLM-Redactor-Mode") == "signed-passthrough"
+
+
 # --------------- Proxy config endpoint still works ---------------
 
 

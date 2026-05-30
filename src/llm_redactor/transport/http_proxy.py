@@ -13,7 +13,7 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from ..config import Config
 from ..detect.types import Span
@@ -23,8 +23,29 @@ from ..redact.placeholder import PlaceholderGenerator, redact
 from ..redact.restore import restore
 from ..transport.cloud import (
     forward_anthropic_messages,
+    forward_anthropic_raw,
+    forward_anthropic_raw_stream,
     forward_chat_completion_stream,
 )
+
+
+def _body_has_signed_blocks(body: dict[str, Any]) -> bool:
+    """True if any message in the body has a thinking / redacted_thinking block.
+
+    Anthropic validates these blocks against the JSON encoding it served;
+    any json.loads/dumps round-trip in the chain breaks the signature.
+    Callers must forward such requests as raw bytes.
+    """
+    for msg in body.get("messages") or []:
+        content = msg.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") in (
+                    "thinking",
+                    "redacted_thinking",
+                ):
+                    return True
+    return False
 
 app = FastAPI(title="llm-redactor", version="0.1.0")
 
@@ -350,15 +371,70 @@ async def _handle_anthropic_stream(
 
 
 @app.post("/v1/messages", response_model=None)
-async def anthropic_messages(request: Request) -> JSONResponse | StreamingResponse:
+async def anthropic_messages(request: Request) -> JSONResponse | StreamingResponse | Response:
     """Anthropic Messages API endpoint with redaction.
 
     Redacts content blocks in the request, forwards to the Anthropic
     endpoint, and restores placeholders in the response.
+
+    If the request carries any ``thinking`` / ``redacted_thinking`` blocks,
+    Anthropic validates their signatures against the original JSON bytes —
+    any json.loads/dumps round-trip breaks them with a 400.  In that case
+    we forward the raw inbound bytes unchanged and skip redaction entirely.
     """
-    body: dict[str, Any] = await request.json()
+    raw_body = await request.body()
+    try:
+        body: dict[str, Any] = json.loads(raw_body) if raw_body else {}
+    except json.JSONDecodeError as e:
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"type": "invalid_request_error", "message": str(e)}},
+        )
+
     pipeline = _get_pipeline()
     config = _get_config()
+
+    # Forward all headers from the incoming request (minus hop-by-hop).
+    _skip_hop = frozenset(
+        {"host", "transfer-encoding", "connection", "content-length", "content-encoding"}
+    )
+    raw_passthrough_headers = {
+        k: v for k, v in request.headers.items() if k.lower() not in _skip_hop
+    }
+
+    # Signed Anthropic blocks → raw byte passthrough (no redaction possible).
+    if isinstance(body, dict) and _body_has_signed_blocks(body):
+        log_event("proxy_anthropic_signed_passthrough", message_count=len(body.get("messages") or []))
+        if body.get("stream"):
+            async def stream_raw():
+                async for chunk in forward_anthropic_raw_stream(
+                    raw_body, config.cloud_target, upstream_headers=raw_passthrough_headers
+                ):
+                    yield chunk
+
+            return StreamingResponse(
+                stream_raw(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",
+                    "X-LLM-Redactor-Mode": "signed-passthrough",
+                },
+            )
+
+        resp_bytes, status, resp_headers = await forward_anthropic_raw(
+            raw_body, config.cloud_target, upstream_headers=raw_passthrough_headers
+        )
+        out_headers = {
+            k: v for k, v in resp_headers.items()
+            if k.lower() not in ("transfer-encoding", "content-length", "content-encoding")
+        }
+        out_headers["X-LLM-Redactor-Mode"] = "signed-passthrough"
+        return Response(
+            content=resp_bytes,
+            status_code=status,
+            headers=out_headers,
+        )
 
     # Redact content in each message (one placeholder tag per upstream request).
     messages = body.get("messages", [])
