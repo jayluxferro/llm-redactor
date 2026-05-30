@@ -116,10 +116,9 @@ async def _batch_validate(
         ctx_end = min(len(text), span.end + _CONTEXT_CHARS)
         context = text[ctx_start:ctx_end]
 
-        meta = f'{span.kind}, confidence: {span.confidence:.2f}'
+        meta = f"{span.kind}, confidence: {span.confidence:.2f}"
         entries.append(
-            f'Span {i + 1}: "{span.text}" (detected as: {meta})\n'
-            f"Context: ...{context}..."
+            f'Span {i + 1}: "{span.text}" (detected as: {meta})\nContext: ...{context}...'
         )
 
     prompt = (

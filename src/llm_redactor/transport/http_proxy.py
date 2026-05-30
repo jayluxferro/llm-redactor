@@ -47,6 +47,7 @@ def _body_has_signed_blocks(body: dict[str, Any]) -> bool:
                     return True
     return False
 
+
 app = FastAPI(title="llm-redactor", version="0.1.0")
 
 # Initialized at startup via configure().
@@ -139,12 +140,18 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
 
     if is_stream:
         return await _handle_openai_stream(
-            body, pipeline, config, upstream_headers, strict=effective_strict,
+            body,
+            pipeline,
+            config,
+            upstream_headers,
+            strict=effective_strict,
         )
 
     try:
         result = await pipeline.run(
-            body, upstream_headers=upstream_headers, strict=effective_strict,
+            body,
+            upstream_headers=upstream_headers,
+            strict=effective_strict,
         )
     except RefusalError as e:
         return _refusal_response(e)
@@ -349,14 +356,10 @@ async def _handle_anthropic_stream(
                 yield chunk
         except httpx.HTTPStatusError as e:
             # Stream failed after headers — emit error as SSE
-            err = json.dumps(
-                {"error": {"type": "upstream_error", "message": str(e)}}
-            )
+            err = json.dumps({"error": {"type": "upstream_error", "message": str(e)}})
             yield f"event: error\ndata: {err}\n\n".encode()
         except Exception as e:
-            err = json.dumps(
-                {"error": {"type": "proxy_error", "message": str(e)}}
-            )
+            err = json.dumps({"error": {"type": "proxy_error", "message": str(e)}})
             yield f"event: error\ndata: {err}\n\n".encode()
 
     return StreamingResponse(
@@ -404,8 +407,11 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
 
     # Signed Anthropic blocks → raw byte passthrough (no redaction possible).
     if isinstance(body, dict) and _body_has_signed_blocks(body):
-        log_event("proxy_anthropic_signed_passthrough", message_count=len(body.get("messages") or []))
+        log_event(
+            "proxy_anthropic_signed_passthrough", message_count=len(body.get("messages") or [])
+        )
         if body.get("stream"):
+
             async def stream_raw():
                 async for chunk in forward_anthropic_raw_stream(
                     raw_body, config.cloud_target, upstream_headers=raw_passthrough_headers
@@ -426,7 +432,8 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
             raw_body, config.cloud_target, upstream_headers=raw_passthrough_headers
         )
         out_headers = {
-            k: v for k, v in resp_headers.items()
+            k: v
+            for k, v in resp_headers.items()
             if k.lower() not in ("transfer-encoding", "content-length", "content-encoding")
         }
         out_headers["X-LLM-Redactor-Mode"] = "signed-passthrough"

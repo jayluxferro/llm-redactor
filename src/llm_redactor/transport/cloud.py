@@ -41,7 +41,6 @@ async def forward_chat_completion(
         return _parse_json_response(resp, url)
 
 
-
 def _parse_json_response(resp: httpx.Response, url: str) -> dict[str, Any]:
     """Parse JSON from an upstream response, with a clear error on failure."""
     try:

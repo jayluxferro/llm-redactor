@@ -199,8 +199,11 @@ def test_anthropic_thinking_block_bypasses_redaction():
     async def fake_raw(body_bytes, config, *, timeout=120.0, upstream_headers=None):
         captured["body"] = body_bytes
         captured["headers"] = upstream_headers
-        return (b'{"id":"msg_x","type":"message","role":"assistant","content":[]}',
-                200, {"content-type": "application/json"})
+        return (
+            b'{"id":"msg_x","type":"message","role":"assistant","content":[]}',
+            200,
+            {"content-type": "application/json"},
+        )
 
     with patch(
         "llm_redactor.transport.http_proxy.forward_anthropic_raw",
@@ -236,7 +239,7 @@ def test_anthropic_redacted_thinking_also_bypasses():
     )
 
     async def fake_raw(body_bytes, config, *, timeout=120.0, upstream_headers=None):
-        return b'{}', 200, {"content-type": "application/json"}
+        return b"{}", 200, {"content-type": "application/json"}
 
     with patch(
         "llm_redactor.transport.http_proxy.forward_anthropic_raw",

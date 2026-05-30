@@ -36,9 +36,7 @@ CLASSIFIER_MESSAGES: list[dict[str, str]] = [
     {"role": "assistant", "content": "COMPLEX"},
     {
         "role": "user",
-        "content": (
-            "Classify: Rename variable x to count. Answer TRIVIAL or COMPLEX only."
-        ),
+        "content": ("Classify: Rename variable x to count. Answer TRIVIAL or COMPLEX only."),
     },
     {"role": "assistant", "content": "TRIVIAL"},
     {
@@ -52,8 +50,7 @@ CLASSIFIER_MESSAGES: list[dict[str, str]] = [
     {
         "role": "user",
         "content": (
-            "Classify: What does the len() function do in Python? "
-            "Answer TRIVIAL or COMPLEX only."
+            "Classify: What does the len() function do in Python? Answer TRIVIAL or COMPLEX only."
         ),
     },
     {"role": "assistant", "content": "TRIVIAL"},

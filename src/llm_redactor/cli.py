@@ -32,9 +32,7 @@ def serve(
     port: int = typer.Option(7789, help="HTTP proxy port"),
     host: str = typer.Option("127.0.0.1", "--host", help="HTTP bind host"),
     config_path: str = typer.Option("llm_redactor.yaml", "--config", help="Config file path"),
-    upstream: str | None = typer.Option(
-        None, "--upstream", help="Override the cloud upstream URL"
-    ),
+    upstream: str | None = typer.Option(None, "--upstream", help="Override the cloud upstream URL"),
 ) -> None:
     """Start the llm-redactor HTTP proxy."""
     import uvicorn
