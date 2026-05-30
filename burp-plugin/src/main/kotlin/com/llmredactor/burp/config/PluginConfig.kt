@@ -50,7 +50,7 @@ class PluginConfig(private val store: PersistedObject) {
             "/anthropic/v1/messages",
             "/aiserver.v1.",
         )
-        private val DEFAULT_CATEGORIES = setOf("pii", "secret")
+        private val DEFAULT_CATEGORIES = setOf("all")
         const val DEFAULT_LOG_ROW_CAP = 500
     }
 
@@ -126,7 +126,7 @@ class PluginConfig(private val store: PersistedObject) {
         set(v) = store.setString(KEY_TOOLS_POLICY, v.lowercase())
 
     var llmValidationEnabled: Boolean
-        get() = store.getBoolean(KEY_LLM_VALIDATION) ?: false
+        get() = store.getBoolean(KEY_LLM_VALIDATION) ?: true
         set(v) = store.setBoolean(KEY_LLM_VALIDATION, v)
 
     var ollamaEndpoint: String
@@ -134,7 +134,7 @@ class PluginConfig(private val store: PersistedObject) {
         set(v) = store.setString(KEY_OLLAMA_ENDPOINT, v)
 
     var ollamaModel: String
-        get() = store.getString(KEY_OLLAMA_MODEL) ?: "llama3.2"
+        get() = store.getString(KEY_OLLAMA_MODEL) ?: "llama3.2:3b"
         set(v) = store.setString(KEY_OLLAMA_MODEL, v)
 
     /** Max rows in the Activity log table (ring buffer). */

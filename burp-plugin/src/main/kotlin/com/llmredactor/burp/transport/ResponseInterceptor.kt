@@ -55,26 +55,29 @@ class ResponseInterceptor(
 
             if (rawBytes.isEmpty()) return strip(interceptedResponse)
 
-            val restoredBytes = when {
+            val (restoredBytes, stripCe) = when {
                 ct.contains("text/event-stream", ignoreCase = true) -> {
                     val decoded = TransportLogic.decodeResponseBody(rawBytes, ceHeader)
                     val text = TransportLogic.restoreSseBody(decoded.text, reverseMap)
-                    TransportLogic.encodeResponseBody(text, decoded, ceHeader).bytes
+                    val enc = TransportLogic.encodeResponseBody(text, decoded, ceHeader)
+                    enc.bytes to enc.stripContentEncoding
                 }
                 format == BodyFormat.JSON -> {
                     val decoded = TransportLogic.decodeResponseBody(rawBytes, ceHeader)
                     val text = TransportLogic.restoreJsonBody(decoded.text, reverseMap)
-                    TransportLogic.encodeResponseBody(text, decoded, ceHeader).bytes
+                    val enc = TransportLogic.encodeResponseBody(text, decoded, ceHeader)
+                    enc.bytes to enc.stripContentEncoding
                 }
-                format == BodyFormat.CONNECT_PROTO ->
-                    BodyProcessor.restoreResponse(rawBytes, format, ceHeader, reverseMap)
+                format == BodyFormat.CONNECT_PROTO -> {
+                    val bytes = BodyProcessor.restoreResponse(rawBytes, format, ceHeader, reverseMap)
+                        ?: return strip(interceptedResponse)
+                    bytes to false
+                }
                 else -> {
                     debugLog("skip restore: format=$format ct='$ct'")
                     return strip(interceptedResponse)
                 }
             }
-
-            if (restoredBytes == null) return strip(interceptedResponse)
 
             stats.restores.incrementAndGet()
             logPanel.refreshStats()
@@ -92,11 +95,6 @@ class ResponseInterceptor(
                 .withRemovedHeader("X-Redactor-Session")
                 .withRemovedHeader("Transfer-Encoding")
                 .withUpdatedHeader("Content-Length", restoredBytes.size.toString())
-
-            val stripCe = ceHeader.isNotEmpty() && ceHeader != "identity" &&
-                !rawBytes.contentEquals(restoredBytes) &&
-                restoredBytes.size >= 2 &&
-                (restoredBytes[0].toInt() and 0xFF) != 0x1F
 
             if (stripCe) response = response.withRemovedHeader("Content-Encoding")
 

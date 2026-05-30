@@ -59,7 +59,7 @@ object BodyProcessor {
             else -> null
         } ?: return null
         val wire = ConnectProtoCodec.encodeHttpBody(inner.bytes, http.httpContentEncoding)
-        return RedactOutcome(wire.bytes, inner.reverseMap, inner.summary, http.httpContentEncoding)
+        return RedactOutcome(wire.bytes, inner.reverseMap, inner.summary, wire.httpContentEncoding)
     }
 
     fun restoreResponse(

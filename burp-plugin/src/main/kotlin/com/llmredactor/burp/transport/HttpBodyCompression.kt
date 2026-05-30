@@ -117,7 +117,7 @@ object HttpBodyCompression {
                 Kind.IDENTITY -> inner to Kind.IDENTITY
             }
         } catch (_: Exception) {
-            if (kind == Kind.COMPRESS) inner to Kind.IDENTITY else inner to kind
+            inner to Kind.IDENTITY
         }
 
     internal fun hasUnixCompressMagic(b: ByteArray): Boolean =

@@ -72,15 +72,8 @@ object TransportLogic {
         if (!decoded.wasCompressed) {
             return EncodedBody(utf8, stripContentEncoding = ce.isNotEmpty() && ce != "identity")
         }
-        val bytes = when (decoded.httpKind) {
-            HttpBodyCompression.Kind.GZIP -> gzipBytes(utf8)
-            HttpBodyCompression.Kind.DEFLATE -> deflateBytes(utf8)
-            HttpBodyCompression.Kind.BROTLI -> HttpBodyCompression.encode(utf8, HttpBodyCompression.Kind.BROTLI)
-            HttpBodyCompression.Kind.ZSTD -> HttpBodyCompression.encode(utf8, HttpBodyCompression.Kind.ZSTD)
-            HttpBodyCompression.Kind.COMPRESS -> HttpBodyCompression.encode(utf8, HttpBodyCompression.Kind.COMPRESS)
-            HttpBodyCompression.Kind.IDENTITY -> utf8
-        }
-        return EncodedBody(bytes, stripContentEncoding = false)
+        val (bytes, actualKind) = HttpBodyCompression.encodeWithKind(utf8, decoded.httpKind)
+        return EncodedBody(bytes, stripContentEncoding = actualKind == HttpBodyCompression.Kind.IDENTITY)
     }
 
     fun restoreJsonBody(body: String, map: Map<String, String>): String =
