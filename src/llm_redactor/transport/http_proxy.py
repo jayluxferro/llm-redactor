@@ -530,7 +530,7 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
             except Exception:
                 text = f"(undecodable body, {len(e.response.content)} bytes)"
             err_body = {"error": text}
-        resp_headers: dict[str, str] = {}
+        resp_headers = {}
         if ra := e.response.headers.get("retry-after"):
             resp_headers["retry-after"] = ra
         return JSONResponse(
