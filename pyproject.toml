@@ -69,3 +69,7 @@ mypy_path = ["src", "."]
 packages = ["llm_redactor", "evals"]
 explicit_package_bases = true
 warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = ["onnxruntime", "PIL", "PIL.*"]
+ignore_missing_imports = true

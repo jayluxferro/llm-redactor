@@ -135,7 +135,7 @@ class OnnxImageRedactor:
         if not self.config.model_path or not model_path.is_file():
             raise ImageRedactionUnavailable("configured ONNX image model does not exist")
         try:
-            import onnxruntime as ort  # type: ignore[import-untyped]
+            import onnxruntime as ort
         except ImportError as exc:
             raise ImageRedactionUnavailable(
                 "install llm-redactor[image] to enable image redaction"
