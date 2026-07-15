@@ -217,5 +217,15 @@ critical. The live Activity UI is bounded and shows only time, host, protocol,
 result, detection counts, and pass-through reason; it never stores request bytes,
 detected values, or reverse maps.
 
+When `pipeline.image_redaction.enabled` and `license_acknowledged` are true, raw
+JPEG/PNG bodies and base64 `data:image/...` attachments take a separate loopback-only
+path: the extension sends decoded bytes to `POST /v1/redactor/redact-image`, which
+runs a user-supplied local RF-DETR-compatible ONNX model and paints opaque black
+rectangles over all detections.
+ONNX Runtime chooses CoreML, CUDA, DirectML, or CPU locally. Model weights are not
+bundled; the Screenpipe reference model is CC BY-NC 4.0, so this adapter is intended
+for permitted non-commercial use. Missing models/runtimes return 503 and cause a
+safe pass-through with `image-redactor-unavailable` activity metadata.
+
 Build: `cd burp-plugin && gradle shadowJar` → `build/libs/burp-llm-redactor.jar`.
 Details: [`burp-plugin/README.md`](../burp-plugin/README.md).

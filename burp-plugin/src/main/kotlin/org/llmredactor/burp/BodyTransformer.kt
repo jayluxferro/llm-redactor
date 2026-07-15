@@ -7,6 +7,7 @@ import java.io.ByteArrayOutputStream
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.util.Base64
 import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
 import java.util.zip.InflaterInputStream
@@ -17,16 +18,38 @@ data class BodyTransform(val body: ByteArray, val detections: Int, val usedFallb
 /**
  * Rewrites only bodies whose encoding can be safely decoded and re-encoded.
  * JSON, XML, form, multipart text payloads and generic textual content are
- * covered by scanning their UTF-8 text; protobuf uses its own wire walker.
+ * covered by scanning their UTF-8 text; protobuf uses its own wire walker. JPEG
+ * and PNG request bodies use the optional local ONNX image-redaction endpoint.
  */
-class BodyTransformer(private val redactor: TextRedactor) {
+class BodyTransformer(
+    private val redactor: TextRedactor,
+    private val imageRedactor: ImageRedactor = LocalImageRedactor(),
+) {
     fun transform(body: ByteArray, contentType: String?, contentEncoding: String?): BodyTransform {
         val encoding = contentEncoding?.lowercase()?.trim().orEmpty()
         val decoded = decode(body, encoding) ?: return BodyTransform(body, 0, false, "unsupported-encoding:$encoding")
-        val isProtobuf = contentType?.lowercase()?.contains("protobuf") == true
+        val mediaType = contentType?.substringBefore(';')?.lowercase()?.trim().orEmpty()
+        if (mediaType in IMAGE_TYPES) return redactImage(body, decoded, mediaType, encoding)
+        val isProtobuf = mediaType.contains("protobuf")
         val result = if (isProtobuf) redactProtobuf(decoded) else redactUtf8(decoded)
         if (result.reason != null) return result.copy(body = body)
         return result.copy(body = encode(result.body, encoding) ?: body)
+    }
+
+    private fun redactImage(
+        original: ByteArray,
+        decoded: ByteArray,
+        mediaType: String,
+        encoding: String,
+    ): BodyTransform {
+        return try {
+            val result = imageRedactor.redact(decoded, mediaType)
+            val encoded = encode(result.body, encoding)
+            if (encoded == null) BodyTransform(original, 0, false, "unsupported-encoding:$encoding")
+            else BodyTransform(encoded, result.detections, false)
+        } catch (_: Exception) {
+            BodyTransform(original, 0, false, "image-redactor-unavailable")
+        }
     }
 
     fun transformQuery(path: String): Pair<String, Int> {
@@ -49,8 +72,33 @@ class BodyTransformer(private val redactor: TextRedactor) {
         val text = bytes.toString(StandardCharsets.UTF_8)
         // Replacement characters mean this is binary or a legacy charset; leave it alone.
         if ('\uFFFD' in text) return BodyTransform(bytes, 0, false, "non-utf8-body")
-        val outcome = redactor.redact(text)
-        return BodyTransform(outcome.text.toByteArray(StandardCharsets.UTF_8), outcome.spans.size, outcome.usedFallback)
+        val embedded = redactEmbeddedImages(text)
+        val outcome = redactor.redact(embedded.text)
+        return BodyTransform(
+            outcome.text.toByteArray(StandardCharsets.UTF_8),
+            outcome.spans.size + embedded.detections,
+            outcome.usedFallback,
+        )
+    }
+
+    /** Redact inline data-URL image attachments before scanning the surrounding text. */
+    private fun redactEmbeddedImages(text: String): EmbeddedImageTransform {
+        var output = text
+        var detections = 0
+        dataImageUrl.findAll(text).toList().asReversed().forEach { match ->
+            val mediaType = match.groups[1]!!.value.lowercase()
+            val encoded = match.groups[2]!!.value.replace(Regex("\\s"), "")
+            val replacement = try {
+                val source = Base64.getDecoder().decode(encoded)
+                val result = imageRedactor.redact(source, mediaType)
+                detections += result.detections
+                "data:$mediaType;base64," + Base64.getEncoder().encodeToString(result.body)
+            } catch (_: Exception) {
+                return@forEach
+            }
+            output = output.substring(0, match.range.first) + replacement + output.substring(match.range.last + 1)
+        }
+        return EmbeddedImageTransform(output, detections)
     }
 
     /** Schema-blind protobuf walker for length-delimited fields containing valid UTF-8. */
@@ -131,4 +179,11 @@ class BodyTransformer(private val redactor: TextRedactor) {
             else -> null
         }
     } catch (_: Exception) { null }
+
+    private companion object {
+        val IMAGE_TYPES = setOf("image/jpeg", "image/png")
+        val dataImageUrl = Regex("""data:(image/(?:png|jpeg));base64,([A-Za-z0-9+/=\r\n]+)""")
+    }
+
+    private data class EmbeddedImageTransform(val text: String, val detections: Int)
 }

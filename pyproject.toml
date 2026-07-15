@@ -35,6 +35,11 @@ dev = [
   "mypy>=1.8",
   "types-PyYAML>=6.0",
 ]
+image = [
+  "numpy>=2.0",
+  "onnxruntime>=1.20",
+  "pillow>=10.0",
+]
 
 [project.scripts]
 llm-redactor = "llm_redactor.cli:app"

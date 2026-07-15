@@ -9,5 +9,13 @@ pipeline:
   opt_b_redact:
     enabled: true
     strict: false
+  # Optional, non-commercial local image PII redaction. Download a compatible
+  # Screenpipe ONNX model yourself; weights are not distributed by this project.
+  image_redaction:
+    enabled: false
+    license_acknowledged: false
+    model_path: /Volumes/Lux/dev/ml/mcp/llm-redactor/models/screenpipe/rfdetr_v13.onnx
+    input_size: 384
+    score_threshold: 0.8
 policy:
   categories: [all]

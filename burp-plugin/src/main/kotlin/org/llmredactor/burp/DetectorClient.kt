@@ -39,6 +39,20 @@ class DetectorClient(private val endpoint: String = "http://127.0.0.1:7789/v1/re
         return items.map { item -> item.map(::span) }
     }
 
+    fun redactImage(body: ByteArray, mediaType: String): RedactedImage {
+        require(isLoopback(endpoint)) { "Detector endpoint must be loopback" }
+        val request = HttpRequest.newBuilder(endpointFor("/v1/redactor/redact-image"))
+            .timeout(Duration.ofSeconds(15))
+            .header("Content-Type", mediaType)
+            .POST(HttpRequest.BodyPublishers.ofByteArray(body))
+            .build()
+        val response = http.send(request, HttpResponse.BodyHandlers.ofByteArray())
+        check(response.statusCode() == 200) { "image redactor returned ${response.statusCode()}" }
+        val detections = response.headers().firstValue("X-LLM-Redactor-Detections")
+            .orElse("0").toIntOrNull() ?: 0
+        return RedactedImage(response.body(), detections)
+    }
+
     private fun span(node: JsonNode) = Span(
         start = node.path("start").asInt(), end = node.path("end").asInt(),
         kind = node.path("kind").asText("sensitive"), confidence = node.path("confidence").asDouble(1.0),
@@ -49,4 +63,11 @@ class DetectorClient(private val endpoint: String = "http://127.0.0.1:7789/v1/re
         val host = URI(value).host ?: return false
         return host == "localhost" || host == "127.0.0.1" || host == "::1"
     }
+
+    private fun endpointFor(path: String): URI {
+        val base = URI(endpoint)
+        return URI(base.scheme, base.userInfo, base.host, base.port, path, null, null)
+    }
 }
+
+data class RedactedImage(val body: ByteArray, val detections: Int)

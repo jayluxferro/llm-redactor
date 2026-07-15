@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from ..config import Config
 from ..detect.types import Span
+from ..image.redactor import ImageRedactionUnavailable, InvalidImage, OnnxImageRedactor
 from ..observability import log_event
 from ..pipeline.option_b import OptionBPipeline, RefusalError
 from ..redact.placeholder import PlaceholderGenerator, redact
@@ -53,13 +54,15 @@ app = FastAPI(title="llm-redactor", version="0.1.0")
 # Initialized at startup via configure().
 _pipeline: OptionBPipeline | None = None
 _config: Config | None = None
+_image_redactor: OnnxImageRedactor | None = None
 
 
 def configure(config: Config, *, use_ner: bool = True) -> FastAPI:
     """Wire the pipeline into the app. Call before serving."""
-    global _pipeline, _config
+    global _pipeline, _config, _image_redactor
     _pipeline = OptionBPipeline(config=config, use_ner=use_ner)
     _config = config
+    _image_redactor = OnnxImageRedactor(config.pipeline.image_redaction)
     return app
 
 
@@ -73,6 +76,12 @@ def _get_config() -> Config:
     if _config is None:
         raise RuntimeError("Proxy not configured — call configure() first")
     return _config
+
+
+def _get_image_redactor() -> OnnxImageRedactor:
+    if _image_redactor is None:
+        raise RuntimeError("Proxy not configured — call configure() first")
+    return _image_redactor
 
 
 # --------------- OpenAI-compatible endpoints ---------------
@@ -676,6 +685,31 @@ async def redactor_detect_batch(request: Request) -> JSONResponse:
     return JSONResponse(content={"items": items})
 
 
+@app.post("/v1/redactor/redact-image", response_model=None)
+async def redactor_redact_image(request: Request) -> Response | JSONResponse:
+    """Redact PII regions in a JPEG or PNG with the optional local ONNX model.
+
+    The response is image bytes in the source media type. This endpoint never
+    forwards image bytes to a remote model and returns 503 when image redaction
+    is not configured, so a caller can safely pass the original through.
+    """
+    media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    source = await request.body()
+    try:
+        redacted, detections = _get_image_redactor().redact(source, media_type)
+    except ImageRedactionUnavailable as exc:
+        return JSONResponse(status_code=503, content={"error": str(exc)})
+    except InvalidImage as exc:
+        status = 413 if "maximum size" in str(exc) else 422
+        return JSONResponse(status_code=status, content={"error": str(exc)})
+
+    return Response(
+        content=redacted,
+        media_type=media_type,
+        headers={"X-LLM-Redactor-Detections": str(len(detections))},
+    )
+
+
 @app.get("/v1/redactor/stats")
 async def redactor_stats() -> JSONResponse:
     """Aggregate counters since process start."""
@@ -696,6 +730,10 @@ async def redactor_config() -> JSONResponse:
                     "strict": cfg.pipeline.opt_b_redact.strict,
                 },
                 "llm_validation": {"enabled": cfg.pipeline.llm_validation.enabled},
+                "image_redaction": {
+                    "enabled": cfg.pipeline.image_redaction.enabled,
+                    "model_configured": bool(cfg.pipeline.image_redaction.model_path),
+                },
                 "placeholder_request_tag": cfg.pipeline.placeholder_request_tag,
             },
             "transport": {

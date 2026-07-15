@@ -275,6 +275,36 @@ or detected values are persisted.
 at the llm-redactor proxy unless you intend to — restrict Burp target hosts or disable
 one layer.
 
+#### Optional local image redaction
+
+The Burp extension can also redact raw JPEG/PNG request bodies and base64
+`data:image/...` attachments in textual request bodies before they leave Burp. It
+uses an optional local ONNX Runtime adapter and a user-supplied
+Screenpipe-compatible detector; no image is sent to Ollama, `llama-server`, or a
+cloud service. The model weights are CC BY-NC 4.0 and are not bundled, so enable it
+only for permitted non-commercial use:
+
+```bash
+uv sync --extra image
+git lfs install
+git clone --depth 1 https://huggingface.co/screenpipe/pii-image-redactor models/screenpipe
+```
+
+```yaml
+pipeline:
+  image_redaction:
+    enabled: true
+    license_acknowledged: true
+    model_path: /absolute/path/to/llm-redactor/models/screenpipe/rfdetr_v13.onnx
+    input_size: 384
+    score_threshold: 0.8
+```
+
+The adapter uses CoreML, CUDA, or DirectML when the installed ONNX Runtime exposes
+one; otherwise it runs on CPU. It paints opaque rectangles over every detected region.
+If the model/runtime is unavailable, the image passes through unchanged and the Burp
+Activity tab records `image-redactor-unavailable`.
+
 ### 5. Claude Code hook (automatic warnings)
 
 Install a pre-tool hook that warns when sensitive content is about

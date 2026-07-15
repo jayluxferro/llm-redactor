@@ -51,6 +51,22 @@ class LLMValidationConfig:
 
 
 @dataclass
+class ImageRedactionConfig:
+    """Optional local ONNX image detector/redactor configuration.
+
+    The model is intentionally not bundled: operators must download it themselves
+    and accept its license before enabling this capability.
+    """
+
+    enabled: bool = False
+    model_path: str = ""
+    input_size: int = 384
+    score_threshold: float = 0.8
+    max_image_bytes: int = 10_000_000
+    license_acknowledged: bool = False
+
+
+@dataclass
 class OptionBConfig(OptionConfig):
     enabled: bool = True
     strict: bool = True
@@ -94,6 +110,7 @@ class OptionHConfig(OptionConfig):
 @dataclass
 class PipelineConfig:
     llm_validation: LLMValidationConfig = field(default_factory=LLMValidationConfig)
+    image_redaction: ImageRedactionConfig = field(default_factory=ImageRedactionConfig)
     # When true, each HTTP/proxy request gets random bytes in placeholders (e.g. ⟨EMAIL_1·a1b2c3d⟩).
     placeholder_request_tag: bool = False
     opt_a_local_only: OptionConfig = field(default_factory=OptionConfig)

@@ -37,14 +37,15 @@ class TextRedactor(
      * offset, then apply only spans outside the protected ranges to the original.
      */
     private fun prepare(text: String): PreparedText {
-        val protected = encryptedJsonValue.findAll(text).map { match ->
+        val opaqueMatches = opaqueValues.flatMap { regex -> regex.findAll(text).toList() }
+        val protected = opaqueMatches.map { match ->
             val value = match.groups[1]!!
             CodePointRange(text.codePointCount(0, value.range.first), text.codePointCount(0, value.range.last + 1))
-        }.toList()
+        }
         if (protected.isEmpty()) return PreparedText(text, emptyList())
 
         val masked = text.toCharArray()
-        encryptedJsonValue.findAll(text).forEach { match ->
+        opaqueMatches.forEach { match ->
             val value = match.groups[1]!!
             for (index in value.range) masked[index] = 'x'
         }
@@ -58,8 +59,12 @@ class TextRedactor(
     private data class CodePointRange(val start: Int, val end: Int)
 
     companion object {
-        private val encryptedJsonValue = Regex(
-            """(?i)"(?:encrypted(?:[_-]?(?:content|payload|data))?|cipher(?:text|[_-]?(?:content|payload|data))?|sealed(?:[_-]?(?:content|payload|data))?)"\s*:\s*"((?:\\.|[^"\\])*)""",
+        private val opaqueValues = listOf(
+            Regex(
+                """(?i)"(?:encrypted(?:[_-]?(?:content|payload|data))?|cipher(?:text|[_-]?(?:content|payload|data))?|sealed(?:[_-]?(?:content|payload|data))?)"\s*:\s*"((?:\\.|[^"\\])*)""",
+            ),
+            // Image attachments need pixel redaction rather than text-span replacement.
+            Regex("""(data:image/(?:png|jpeg);base64,[A-Za-z0-9+/=\r\n]+)"""),
         )
     }
 

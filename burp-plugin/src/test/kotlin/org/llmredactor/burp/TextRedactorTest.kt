@@ -1,6 +1,7 @@
 package org.llmredactor.burp
 
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -34,5 +35,45 @@ class TextRedactorTest {
         assertTrue(result.usedFallback)
         assertTrue(result.text.contains("\"encrypted_content\":\"$encrypted\""))
         assertTrue(result.text.contains("\"email\":\"⟨EMAIL_1⟩\""))
+    }
+
+    @Test fun `JPEG and PNG bodies use the local image redactor`() {
+        val imageRedactor = ImageRedactor { body, mediaType ->
+            assertEquals("image/png", mediaType)
+            assertContentEquals(byteArrayOf(1, 2, 3), body)
+            RedactedImage(byteArrayOf(9, 8), detections = 2)
+        }
+        val transformer = BodyTransformer(
+            TextRedactor(DetectorClient("http://127.0.0.1:1/nope")),
+            imageRedactor,
+        )
+
+        val result = transformer.transform(byteArrayOf(1, 2, 3), "image/png", null)
+        assertContentEquals(byteArrayOf(9, 8), result.body)
+        assertEquals(2, result.detections)
+        assertEquals(null, result.reason)
+    }
+
+    @Test fun `base64 image attachments use the local image redactor`() {
+        val imageRedactor = ImageRedactor { body, mediaType ->
+            assertEquals("image/png", mediaType)
+            assertContentEquals(byteArrayOf(1, 2, 3), body)
+            RedactedImage(byteArrayOf(4, 5), detections = 1)
+        }
+        val transformer = BodyTransformer(
+            TextRedactor(DetectorClient("http://127.0.0.1:1/nope")),
+            imageRedactor,
+        )
+        val result = transformer.transform(
+            """{"image_url":"data:image/png;base64,AQID"}""".encodeToByteArray(),
+            "application/json",
+            null,
+        )
+
+        assertEquals(
+            """{"image_url":"data:image/png;base64,BAU="}""",
+            result.body.decodeToString(),
+        )
+        assertEquals(1, result.detections)
     }
 }
