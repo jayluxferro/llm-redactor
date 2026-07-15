@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import re
+import logging
 
 from .ner import detect_ner
 from .regex import detect_regex
 from .types import Span
+
+_LOG = logging.getLogger(__name__)
 
 # Common false positives from NER — short words, abbreviations, and
 # generic terms that Presidio/spaCy frequently misclassify.
@@ -137,7 +140,14 @@ def detect_all(text: str, use_ner: bool = True) -> list[Span]:
     spans = detect_regex(text)
 
     if use_ner:
-        ner_spans = detect_ner(text)
+        try:
+            ner_spans = detect_ner(text)
+        except Exception as exc:
+            # The proxy must remain useful when a local model is unavailable
+            # (for example, a first-run spaCy download blocked by a corporate
+            # TLS proxy). Regex detections are still safe to apply.
+            _LOG.warning("NER unavailable; continuing with regex detection: %s", type(exc).__name__)
+            ner_spans = []
         spans.extend(s for s in ner_spans if not _is_false_positive(s))
 
     return _merge_overlapping(spans)
@@ -161,17 +171,23 @@ async def detect_all_validated(
     spans = detect_regex(text)
 
     if use_ner:
-        ner_spans = detect_ner(text)
+        try:
+            ner_spans = detect_ner(text)
+        except Exception as exc:
+            _LOG.warning("NER unavailable; continuing with regex detection: %s", type(exc).__name__)
+            ner_spans = []
         spans.extend(s for s in ner_spans if not _is_false_positive(s))
 
     merged = _merge_overlapping(spans)
 
     # LLM validation pass — only validates NER spans (regex are auto-kept).
-    validated = await validate_spans(
-        text,
-        merged,
-        endpoint=ollama_endpoint,
-        model=ollama_model,
-    )
-
-    return validated
+    try:
+        return await validate_spans(
+            text,
+            merged,
+            endpoint=ollama_endpoint,
+            model=ollama_model,
+        )
+    except Exception as exc:
+        _LOG.warning("local LLM validation unavailable; retaining detected spans: %s", type(exc).__name__)
+        return merged

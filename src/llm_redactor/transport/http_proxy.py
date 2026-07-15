@@ -634,6 +634,48 @@ async def redactor_detect(request: Request) -> JSONResponse:
     )
 
 
+def _serialize_spans(spans: list[Span]) -> list[dict[str, Any]]:
+    """Serialize detector output without changing its public field names."""
+    return [
+        {
+            "start": s.start,
+            "end": s.end,
+            "kind": s.kind,
+            "confidence": s.confidence,
+            "text": s.text,
+            "source": s.source,
+        }
+        for s in spans
+    ]
+
+
+@app.post("/v1/redactor/detect-batch")
+async def redactor_detect_batch(request: Request) -> JSONResponse:
+    """Detect spans in an ordered batch of text fragments.
+
+    This endpoint is additive: ``/v1/redactor/detect`` remains the compact
+    single-text API.  The Burp extension uses batches so a complex JSON,
+    multipart, or protobuf request only needs one local HTTP round trip.
+
+    Request body:  {"texts": ["first", "second"]}
+    Response body: {"items": [[{span...}], [{span...}]]}
+    """
+    try:
+        body: dict[str, Any] = json.loads(await request.body() or b"{}")
+    except json.JSONDecodeError:
+        return JSONResponse(content={"items": []})
+
+    texts = body.get("texts", [])
+    if not isinstance(texts, list) or not all(isinstance(text, str) for text in texts):
+        return JSONResponse(status_code=422, content={"error": "texts must be a list of strings"})
+    if len(texts) > 1_000:
+        return JSONResponse(status_code=413, content={"error": "too many text fragments"})
+
+    pipeline = _get_pipeline()
+    items = [_serialize_spans(await pipeline.detect_spans(text)) if text else [] for text in texts]
+    return JSONResponse(content={"items": items})
+
+
 @app.get("/v1/redactor/stats")
 async def redactor_stats() -> JSONResponse:
     """Aggregate counters since process start."""
@@ -664,6 +706,7 @@ async def redactor_config() -> JSONResponse:
                 "backend": cfg.cloud_target.backend,
                 "endpoint": cfg.cloud_target.endpoint,
             },
+            "policy": {"categories": cfg.policy.categories},
         }
     )
 

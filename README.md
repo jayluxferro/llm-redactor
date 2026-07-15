@@ -241,25 +241,35 @@ Agent                          llm-redactor                Cloud LLM
 
 ### 4. Burp Suite extension (proxy-layer redaction)
 
-For **Cursor Connect-RPC**, OpenAI/Anthropic JSON, and **OTLP** (`/v1/traces`) traffic
-that already flows through Burp, load the Kotlin extension instead of (or in addition
-to) the Python HTTP proxy:
+For generic HTTP(S) traffic that already flows through Burp, load the Kotlin
+extension instead of (or in addition to) the Python HTTP proxy. It redacts all
+configured categories (default: `all`) from outbound request query values and
+bodies, and from client-to-server WebSocket text frames:
 
 ```bash
 cd burp-plugin
-./gradlew shadowJar
+gradle shadowJar
 # Install build/libs/burp-llm-redactor.jar in Burp → Extensions → Add
 ```
 
-Point your browser or Cursor at Burp’s proxy listener. The extension redacts **outbound**
-bodies only by default (responses pass through so agent tool/file payloads stay exact).
-Same regex/NER pipeline as the Python proxy, plus schema-blind protobuf for Cursor.
+Point your browser or client at Burp’s proxy listener. The extension calls the
+local `POST /v1/redactor/detect-batch` service first, which uses this project's
+regex, NER, and optional local-LLM validation. If that service is unavailable,
+the extension uses its local regex fallback. HTTP responses, SSE event streams,
+and server-to-client WebSocket frames pass through unchanged.
 
 | Topic | Detail |
 |--------|--------|
 | Full docs | [`burp-plugin/README.md`](burp-plugin/README.md) |
-| Build | `./gradlew test shadowJar` (CI runs this on every push) |
-| NER backend | Optional: point Settings → NER endpoint at `http://localhost:7789/v1/redactor/detect` while the Python proxy is running |
+| Build | `gradle test shadowJar` |
+| Detector backend | Start `uv run llm-redactor serve --port 7789`; the plugin uses `http://127.0.0.1:7789/v1/redactor/detect-batch` |
+
+Supported body formats include UTF-8 text, JSON, XML, URL-encoded forms, multipart
+text payloads, and schema-blind protobuf length-delimited UTF-8 fields. gzip,
+deflate, and zstd bodies are decoded and re-encoded. Brotli, unreadable payloads,
+signed requests, binary WebSocket frames, and JSON encrypted/ciphertext values pass through unchanged
+and are recorded in the plugin's metadata-only activity log; no payload text or
+detected values are persisted.
 
 **Do not** stack Burp redaction on top of an already-scrubbed `OPENAI_API_BASE` pointed
 at the llm-redactor proxy unless you intend to — restrict Burp target hosts or disable

@@ -196,17 +196,26 @@ worse than the one we're trying to prevent.
 
 ## Burp Suite extension (`burp-plugin/`)
 
-A Kotlin port of the Option B pipeline runs inside Burp's proxy layer for
-Cursor Connect-RPC and OpenAI-compatible JSON. It shares regex categories and
-optional NER/LLM validation with the Python proxy but adds:
+A Kotlin Option B implementation runs inside Burp's HTTP and WebSocket layers.
+It protects every category by default (`policy.categories: [all]`) and uses the
+local Python detector service as the authoritative detector:
 
-- **Schema-blind protobuf** — wire-format walker with nested sub-message recursion
-  (depth cap 64), packed length-delimited repeats, UTF-8 heuristics, no per-field size cap.
-- **Compression** — gzip, deflate, brotli, zstd, and Unix compress on request bodies.
-- **Outbound-only default** — responses pass through verbatim so agent tool/file payloads stay exact.
-- **Dual-index sessions** — SHA-256 fingerprints of original and redacted bodies for reliable restore.
-- **Activity UI** — ring-buffer log, Live/Paused pill, configurable session and log caps.
-- **JSON tree walk** — all string fields on outbound and optional inbound restore (OTLP, chat).
+1. The extension extracts outbound query values and supported request-body text.
+2. It sends ordered fragments to `POST /v1/redactor/detect-batch` on the local
+   service. That service runs regex, NER, and any enabled local-LLM validation.
+3. The Kotlin plugin replaces returned spans with typed placeholders. On service
+   failure it falls back to its local regex detector.
+4. The transformed request is re-encoded and forwarded. Responses, SSE events,
+   and server-to-client WebSocket frames are deliberately not restored or modified.
 
-Build: `cd burp-plugin && ./gradlew shadowJar` → `build/libs/burp-llm-redactor.jar`.
+Supported payload handling is UTF-8 text, JSON, XML, URL-encoded forms, multipart
+text payloads, generic protobuf length-delimited UTF-8 fields, and gzip/deflate/zstd
+content encodings. Brotli, binary WebSocket frames, signed/authenticated requests,
+unreadable payloads, and JSON encrypted/ciphertext values safely pass through; the
+last category is preserved byte-for-byte because ciphertext integrity is protocol
+critical. The Activity UI is bounded and records
+only host, protocol, result, detection counts, and pass-through reason; it never
+stores request bytes, detected values, or reverse maps.
+
+Build: `cd burp-plugin && gradle shadowJar` → `build/libs/burp-llm-redactor.jar`.
 Details: [`burp-plugin/README.md`](../burp-plugin/README.md).

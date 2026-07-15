@@ -110,7 +110,9 @@ class PipelineConfig:
 class PolicyConfig:
     strict_refuse_on_unknown_sensitive: bool = True
     categories: list[str] = field(
-        default_factory=lambda: ["pii", "secret", "org_identifier", "customer_name"]
+        # A generic proxy must protect every family unless an operator explicitly
+        # narrows its policy.  ``all`` is expanded by ``resolve_categories``.
+        default_factory=lambda: ["all"]
     )
     extend_patterns_file: str = ".llm_redactor/patterns.yaml"
 
