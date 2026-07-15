@@ -554,7 +554,16 @@ you extend them via `policy.extend_patterns_file`.
 ## Tests
 
 ```bash
-uv run pytest -v   # 51 tests
+uv run pytest -v
+make format-check
+make lint
+```
+
+Install the repository's versioned pre-push hook once per clone to run the Ruff
+format and lint checks automatically before every push:
+
+```bash
+make install-hooks
 ```
 
 ## License

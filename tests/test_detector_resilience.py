@@ -19,7 +19,10 @@ def test_detect_all_keeps_regex_results_when_ner_fails():
 async def test_validated_detection_keeps_regex_results_when_local_services_fail():
     with (
         patch("llm_redactor.detect.orchestrator.detect_ner", side_effect=RuntimeError("no model")),
-        patch("llm_redactor.detect.llm_validator.validate_spans", side_effect=RuntimeError("no ollama")),
+        patch(
+            "llm_redactor.detect.llm_validator.validate_spans",
+            side_effect=RuntimeError("no ollama"),
+        ),
     ):
         spans = await detect_all_validated("mail alice@example.com", use_ner=True)
     assert [span.kind for span in spans] == ["email"]

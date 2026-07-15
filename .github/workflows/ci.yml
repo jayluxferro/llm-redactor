@@ -20,6 +20,9 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
 
+      - name: Ruff format check
+        run: uv run ruff format --check src tests evals
+
       - name: Ruff lint
         run: uv run ruff check src tests evals
 

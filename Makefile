@@ -1,4 +1,4 @@
-.PHONY: paper arxiv clean test figures
+.PHONY: paper arxiv clean test figures lint format-check install-hooks
 
 PAPER_DIR  := paper
 ARXIV_DIR  := arxiv_submission
@@ -41,6 +41,16 @@ figures:
 
 test:
 	uv run pytest -v
+
+lint:
+	uv run ruff check src tests evals
+
+format-check:
+	uv run ruff format --check src tests evals
+
+install-hooks:
+	git config core.hooksPath .githooks
+	@echo "Installed repository pre-push hooks."
 
 # --- Evaluation ---
 

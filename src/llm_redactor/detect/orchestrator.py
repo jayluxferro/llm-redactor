@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import re
 import logging
+import re
 
 from .ner import detect_ner
 from .regex import detect_regex
@@ -189,5 +189,8 @@ async def detect_all_validated(
             model=ollama_model,
         )
     except Exception as exc:
-        _LOG.warning("local LLM validation unavailable; retaining detected spans: %s", type(exc).__name__)
+        _LOG.warning(
+            "local LLM validation unavailable; retaining detected spans: %s",
+            type(exc).__name__,
+        )
         return merged
