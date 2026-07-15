@@ -20,4 +20,5 @@ data class Activity(
     val outcome: String,
     val detections: Int = 0,
     val detail: String = "",
+    val timestamp: Long = System.currentTimeMillis(),
 )

@@ -12,4 +12,6 @@ class ActivityLog(private val cap: Int = 500) {
     }
 
     @Synchronized fun snapshot(): List<Activity> = items.toList()
+
+    @Synchronized fun clear() = items.clear()
 }

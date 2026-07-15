@@ -30,5 +30,6 @@ the plugin continues with its local regex fallback.
   signed requests, Brotli, unreadable/binary content, and JSON encrypted/
   ciphertext values unchanged. Opaque ciphertext must not be modified because
   doing so invalidates its authentication tag.
-- Keeps activity records in memory only. They contain no body text, matches,
-  placeholders, or credentials.
+- Shows a live, bounded activity table with time, host, protocol, outcome,
+  detection count, and pass-through reason. Records are in memory only and
+  contain no body text, matches, placeholders, or credentials.

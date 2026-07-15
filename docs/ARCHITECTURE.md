@@ -213,9 +213,9 @@ text payloads, generic protobuf length-delimited UTF-8 fields, and gzip/deflate/
 content encodings. Brotli, binary WebSocket frames, signed/authenticated requests,
 unreadable payloads, and JSON encrypted/ciphertext values safely pass through; the
 last category is preserved byte-for-byte because ciphertext integrity is protocol
-critical. The Activity UI is bounded and records
-only host, protocol, result, detection counts, and pass-through reason; it never
-stores request bytes, detected values, or reverse maps.
+critical. The live Activity UI is bounded and shows only time, host, protocol,
+result, detection counts, and pass-through reason; it never stores request bytes,
+detected values, or reverse maps.
 
 Build: `cd burp-plugin && gradle shadowJar` → `build/libs/burp-llm-redactor.jar`.
 Details: [`burp-plugin/README.md`](../burp-plugin/README.md).

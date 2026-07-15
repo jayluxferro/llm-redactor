@@ -268,8 +268,8 @@ Supported body formats include UTF-8 text, JSON, XML, URL-encoded forms, multipa
 text payloads, and schema-blind protobuf length-delimited UTF-8 fields. gzip,
 deflate, and zstd bodies are decoded and re-encoded. Brotli, unreadable payloads,
 signed requests, binary WebSocket frames, and JSON encrypted/ciphertext values pass through unchanged
-and are recorded in the plugin's metadata-only activity log; no payload text or
-detected values are persisted.
+and are shown in the plugin's live metadata-only activity table; no payload text
+or detected values are persisted.
 
 **Do not** stack Burp redaction on top of an already-scrubbed `OPENAI_API_BASE` pointed
 at the llm-redactor proxy unless you intend to — restrict Burp target hosts or disable

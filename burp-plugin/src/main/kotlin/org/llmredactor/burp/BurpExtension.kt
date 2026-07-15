@@ -17,9 +17,17 @@ import burp.api.montoya.websocket.TextMessageAction
 import burp.api.montoya.websocket.WebSocketCreated
 import burp.api.montoya.websocket.WebSocketCreatedHandler
 import java.awt.BorderLayout
+import java.awt.FlowLayout
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import javax.swing.JButton
 import javax.swing.JLabel
 import javax.swing.JPanel
-import javax.swing.JTextArea
+import javax.swing.JScrollPane
+import javax.swing.JTable
+import javax.swing.Timer
+import javax.swing.table.AbstractTableModel
 
 class BurpLlmRedactor : BurpExtension {
     override fun initialize(api: MontoyaApi) {
@@ -92,10 +100,67 @@ private class RequestRedactionHandler(
 }
 
 private class ActivityPanel(private val activity: ActivityLog) : JPanel(BorderLayout()) {
+    private val activityTableModel = ActivityTableModel()
+    private val refreshTimer = Timer(500) { activityTableModel.replace(activity.snapshot()) }
+
     init {
-        add(JLabel("Live — all categories; outbound HTTP only. Payloads are never stored."), BorderLayout.NORTH)
-        val view = JTextArea("Activity is metadata-only.\n")
-        view.isEditable = false
-        add(view, BorderLayout.CENTER)
+        val header = JPanel(FlowLayout(FlowLayout.LEFT, 8, 4))
+        header.add(JLabel("Live activity — payloads and detected values are never stored."))
+        header.add(JButton("Clear").apply {
+            addActionListener {
+                activity.clear()
+                activityTableModel.replace(emptyList<Activity>())
+            }
+        })
+        add(header, BorderLayout.NORTH)
+
+        val table = JTable(activityTableModel).apply {
+            fillsViewportHeight = true
+            autoCreateRowSorter = true
+        }
+        add(JScrollPane(table), BorderLayout.CENTER)
+        activityTableModel.replace(activity.snapshot())
+    }
+
+    override fun addNotify() {
+        super.addNotify()
+        refreshTimer.start()
+    }
+
+    override fun removeNotify() {
+        refreshTimer.stop()
+        super.removeNotify()
+    }
+}
+
+private class ActivityTableModel : AbstractTableModel() {
+    private var entries: List<Activity> = emptyList()
+
+    fun replace(next: List<Activity>) {
+        if (entries == next) return
+        entries = next
+        fireTableDataChanged()
+    }
+
+    override fun getRowCount() = entries.size
+    override fun getColumnCount() = columns.size
+    override fun getColumnName(column: Int) = columns[column]
+
+    override fun getValueAt(rowIndex: Int, columnIndex: Int): Any {
+        val entry = entries[rowIndex]
+        return when (columnIndex) {
+            0 -> timestamp.format(Instant.ofEpochMilli(entry.timestamp).atZone(ZoneId.systemDefault()))
+            1 -> entry.protocol
+            2 -> entry.host
+            3 -> entry.outcome
+            4 -> entry.detections
+            5 -> entry.detail
+            else -> ""
+        }
+    }
+
+    private companion object {
+        val columns = arrayOf("Time", "Protocol", "Host", "Outcome", "Detections", "Detail")
+        val timestamp: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss.SSS")
     }
 }
