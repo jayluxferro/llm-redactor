@@ -98,9 +98,19 @@ private class RequestRedactionHandler(
         }
         return try {
             val (path, queryCount) = transformer.transformQuery(request.path())
-            val result = transformer.transform(
-                request.body().getBytes(), request.headerValue("Content-Type"), request.headerValue("Content-Encoding"),
-            )
+            val result = if (isCodexResponsesRequest(request)) {
+                transformer.transformCodexResponseRequest(
+                    request.body().getBytes(),
+                    request.headerValue("Content-Type"),
+                    request.headerValue("Content-Encoding"),
+                )
+            } else {
+                transformer.transform(
+                    request.body().getBytes(),
+                    request.headerValue("Content-Type"),
+                    request.headerValue("Content-Encoding"),
+                )
+            }
             if (result.reason != null) {
                 // Preserve query-parameter redactions even when the body cannot
                 // be transformed (e.g. unsupported encoding).  Discarding the
@@ -120,9 +130,21 @@ private class RequestRedactionHandler(
         }
     }
 
+    private fun isCodexResponsesRequest(request: HttpRequestToBeSent): Boolean =
+        request.method().equals("POST", ignoreCase = true) &&
+            (request.pathWithoutQuery() == CODEX_RESPONSES_PATH ||
+                request.pathWithoutQuery().startsWith("$CODEX_RESPONSES_PATH/"))
+
     override fun handleHttpResponseReceived(response: HttpResponseReceived): ResponseReceivedAction {
         val request = response.initiatingRequest()
-        if (BlockedRequestCompatibility.isCanonicalBurpBlock(response.statusCode(), response.bodyToString())) {
+        if (
+            BlockedRequestCompatibility.isCanonicalBurpBlock(
+                response.statusCode(),
+                response.bodyToString(),
+                request.method(),
+                request.pathWithoutQuery(),
+            )
+        ) {
             // Burp may deliberately block fire-and-forget endpoints. Some clients
             // treat that local rejection as a transport failure, so acknowledge it
             // without allowing the request to leave Burp or retaining its payload.
@@ -156,15 +178,25 @@ private class RequestRedactionHandler(
     }
 }
 
+private const val CODEX_RESPONSES_PATH = "/backend-api/codex/responses"
+
 /** Acknowledge Burp's canonical local block response; it never permits egress.
  *  Different Burp extensions return different ``detail`` messages ("Bad Request",
  *  "Not Found", etc.).  Match any single-field ``{"detail":"..."}`` at 400/403 so
- *  the coding agent sees a clean 204 instead of a transport error. */
+ *  the coding agent sees a clean 204 instead of a transport error. Stateful Codex
+ *  response streams are excluded: they require the actual response event sequence. */
 internal object BlockedRequestCompatibility {
     private val burpBlockPattern = Regex("""^\s*\{\s*"detail"\s*:\s*"[^"]*"\s*\}\s*$""")
+    private const val codexResponsesPath = "/backend-api/codex/responses"
 
-    fun isCanonicalBurpBlock(statusCode: Short, body: String): Boolean =
-        statusCode in setOf(400.toShort(), 403.toShort()) && burpBlockPattern.matches(body)
+    fun isCanonicalBurpBlock(statusCode: Short, body: String, method: String, path: String): Boolean =
+        !isCodexResponseStream(method, path) &&
+            statusCode in setOf(400.toShort(), 403.toShort()) &&
+            burpBlockPattern.matches(body)
+
+    private fun isCodexResponseStream(method: String, path: String): Boolean =
+        method.equals("POST", ignoreCase = true) &&
+            (path == codexResponsesPath || path.startsWith("$codexResponsesPath/"))
 }
 
 private class ActivityPanel(private val activity: ActivityLog) : JPanel(BorderLayout()) {

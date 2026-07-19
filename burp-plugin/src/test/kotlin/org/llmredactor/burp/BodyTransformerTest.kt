@@ -19,6 +19,33 @@ class BodyTransformerTest {
 
     // ── Content encoding round-trips ──
 
+    @Test fun `Codex response request redacts only explicit user-text fields`() {
+        val t = transformer()
+        val body = """
+            {"model":"gpt-5-codex","response_id":"alice@example.com","input":[
+              {"type":"input_text","text":"Contact alice@example.com"}
+            ],"metadata":{"owner":"bob@example.com"}}
+        """.trimIndent().encodeToByteArray()
+
+        val result = t.transformCodexResponseRequest(body, "application/json", null)
+        val output = result.body.decodeToString()
+
+        assertEquals(1, result.detections)
+        assertTrue(output.contains("\"text\":\"Contact ⟨EMAIL_1⟩\""))
+        assertTrue(output.contains("\"response_id\":\"alice@example.com\""))
+        assertTrue(output.contains("\"owner\":\"bob@example.com\""))
+    }
+
+    @Test fun `Codex response request preserves invalid JSON`() {
+        val t = transformer()
+        val body = "{not json".encodeToByteArray()
+
+        val result = t.transformCodexResponseRequest(body, "application/json", null)
+
+        assertEquals("codex-protocol-invalid-json", result.reason)
+        assertContentEquals(body, result.body)
+    }
+
     @Test fun `identity encoding returns bytes unchanged`() {
         val t = transformer()
         val body = "hello world".encodeToByteArray()

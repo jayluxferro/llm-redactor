@@ -1,5 +1,8 @@
 package org.llmredactor.burp
 
+import com.fasterxml.jackson.databind.JsonNode
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.databind.node.ObjectNode
 import com.github.luben.zstd.ZstdInputStream
 import com.github.luben.zstd.ZstdOutputStream
 import java.io.ByteArrayInputStream
@@ -34,6 +37,35 @@ class BodyTransformer(
         val result = if (isProtobuf) redactProtobuf(decoded) else redactUtf8(decoded)
         if (result.reason != null) return result.copy(body = body)
         return result.copy(body = encode(result.body, encoding) ?: body)
+    }
+
+    /**
+     * Codex's response endpoint contains protocol IDs and other structured values
+     * alongside user text. Scanning its entire serialized JSON can alter those
+     * protocol values. Redact only explicit user-text fields instead.
+     */
+    fun transformCodexResponseRequest(
+        body: ByteArray,
+        contentType: String?,
+        contentEncoding: String?,
+    ): BodyTransform {
+        val encoding = contentEncoding?.lowercase()?.trim().orEmpty()
+        val decoded = decode(body, encoding)
+            ?: return BodyTransform(body, 0, false, "unsupported-encoding:$encoding")
+        val mediaType = contentType?.substringBefore(';')?.lowercase()?.trim().orEmpty()
+        if (!mediaType.contains("json")) return BodyTransform(body, 0, false, "codex-protocol-non-json")
+
+        return try {
+            val root = mapper.readTree(decoded)
+                ?: return BodyTransform(body, 0, false, "codex-protocol-invalid-json")
+            val stats = redactCodexUserText(root)
+            val encoded = encode(mapper.writeValueAsBytes(root), encoding)
+                ?: return BodyTransform(body, 0, false, "unsupported-encoding:$encoding")
+            BodyTransform(encoded, stats.detections, stats.usedFallback)
+        } catch (_: Exception) {
+            // Protocol JSON must remain untouched when it cannot be parsed safely.
+            BodyTransform(body, 0, false, "codex-protocol-invalid-json")
+        }
     }
 
     private fun redactImage(
@@ -87,6 +119,41 @@ class BodyTransformer(
             outcome.spans.size + embedded.detections,
             outcome.usedFallback,
         )
+    }
+
+    private fun redactCodexUserText(node: JsonNode): TextFieldStats = when {
+        node.isObject -> {
+            var detections = 0
+            var usedFallback = false
+            val fields = node.fields()
+            while (fields.hasNext()) {
+                val (name, value) = fields.next()
+                if (value.isTextual && name.lowercase() in CODEX_USER_TEXT_KEYS) {
+                    val outcome = redactor.redact(value.textValue())
+                    (node as ObjectNode).put(name, outcome.text)
+                    detections += outcome.spans.size
+                    usedFallback = usedFallback || outcome.usedFallback
+                } else {
+                    val nested = redactCodexUserText(value)
+                    detections += nested.detections
+                    usedFallback = usedFallback || nested.usedFallback
+                }
+            }
+            TextFieldStats(detections, usedFallback)
+        }
+
+        node.isArray -> {
+            var detections = 0
+            var usedFallback = false
+            node.forEach { value ->
+                val nested = redactCodexUserText(value)
+                detections += nested.detections
+                usedFallback = usedFallback || nested.usedFallback
+            }
+            TextFieldStats(detections, usedFallback)
+        }
+
+        else -> TextFieldStats(0, false)
     }
 
     /** Redact inline data-URL image attachments before scanning the surrounding text. */
@@ -190,8 +257,10 @@ class BodyTransformer(
     } catch (_: Exception) { null }
 
     private companion object {
+        val mapper = ObjectMapper()
         val IMAGE_TYPES = setOf("image/jpeg", "image/png")
         val dataImageUrl = Regex("""data:(image/(?:png|jpeg));base64,([A-Za-z0-9+/=\r\n]+)""")
+        val CODEX_USER_TEXT_KEYS = setOf("content", "input", "instructions", "message", "prompt", "text")
 
         fun hasImageSignature(bytes: ByteArray, mediaType: String): Boolean = when (mediaType) {
             "image/png" -> bytes.size >= 8 && bytes.copyOfRange(0, 8).contentEquals(
@@ -204,4 +273,5 @@ class BodyTransformer(
     }
 
     private data class EmbeddedImageTransform(val text: String, val detections: Int)
+    private data class TextFieldStats(val detections: Int, val usedFallback: Boolean)
 }

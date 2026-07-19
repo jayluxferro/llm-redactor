@@ -209,9 +209,15 @@ local Python detector service as the authoritative detector:
    and all WebSocket frames are deliberately not restored or modified, except that
    Burp's canonical local block response (`400 {"detail":"Bad Request"}`) is changed
    to a local `204` acknowledgement. This preserves Burp's egress block while keeping
-   fire-and-forget clients from treating it as a transport failure. WebSocket
+   fire-and-forget clients from treating it as a transport failure. Stateful Codex
+   response streams are excluded so their actual stream event sequence is preserved. WebSocket
    frames are logged as streaming-protocol pass-through events because a synchronous
    detector call or byte-level rewrite can break stateful streaming clients.
+
+For `POST /backend-api/codex/responses`, the extension uses field-aware JSON handling:
+only explicit user-text keys (`content`, `input`, `instructions`, `message`, `prompt`,
+and `text`) are redacted. Protocol IDs, metadata, and other structured fields remain
+unchanged. Invalid or non-JSON bodies safely pass through.
 
 Supported payload handling is UTF-8 text, JSON, XML, URL-encoded forms, multipart
 text payloads, generic protobuf length-delimited UTF-8 fields, and gzip/deflate/zstd

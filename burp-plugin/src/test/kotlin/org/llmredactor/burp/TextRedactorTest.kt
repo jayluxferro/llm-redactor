@@ -7,13 +7,13 @@ import kotlin.test.assertTrue
 
 class TextRedactorTest {
     @Test fun `canonical Burp block response is acknowledged generically`() {
-        assertTrue(BlockedRequestCompatibility.isCanonicalBurpBlock(400, "{\"detail\":\"Bad Request\"}"))
-        assertTrue(BlockedRequestCompatibility.isCanonicalBurpBlock(400, "  {\"detail\":\"Bad Request\"}\n"))
-        assertTrue(BlockedRequestCompatibility.isCanonicalBurpBlock(400, "{\"detail\":\"not found\"}"))
-        assertTrue(BlockedRequestCompatibility.isCanonicalBurpBlock(403, "{\"detail\":\"Forbidden\"}"))
-        assertEquals(false, BlockedRequestCompatibility.isCanonicalBurpBlock(400, "{\"error\":\"bad request\"}"))
-        assertEquals(false, BlockedRequestCompatibility.isCanonicalBurpBlock(500, "{\"detail\":\"Bad Request\"}"))
-        assertEquals(false, BlockedRequestCompatibility.isCanonicalBurpBlock(400, "{\"detail\":\"Bad Request\",\"code\":400}"))
+        assertTrue(blockedByBurp(400, "{\"detail\":\"Bad Request\"}"))
+        assertTrue(blockedByBurp(400, "  {\"detail\":\"Bad Request\"}\n"))
+        assertTrue(blockedByBurp(400, "{\"detail\":\"not found\"}"))
+        assertTrue(blockedByBurp(403, "{\"detail\":\"Forbidden\"}"))
+        assertEquals(false, blockedByBurp(400, "{\"error\":\"bad request\"}"))
+        assertEquals(false, blockedByBurp(500, "{\"detail\":\"Bad Request\"}"))
+        assertEquals(false, blockedByBurp(400, "{\"detail\":\"Bad Request\",\"code\":400}"))
     }
 
     @Test fun `regex fallback redacts email and keeps typed placeholder`() {
@@ -288,19 +288,43 @@ class TextRedactorTest {
     // ── BlockedRequestCompatibility additional tests ──
 
     @Test fun `block detection matches empty detail message`() {
-        assertTrue(BlockedRequestCompatibility.isCanonicalBurpBlock(400, "{\"detail\":\"\"}"))
+        assertTrue(blockedByBurp(400, "{\"detail\":\"\"}"))
     }
 
     @Test fun `block detection matches with whitespace around colons`() {
-        assertTrue(BlockedRequestCompatibility.isCanonicalBurpBlock(400, "{ \"detail\" : \"msg\" }"))
+        assertTrue(blockedByBurp(400, "{ \"detail\" : \"msg\" }"))
     }
 
     @Test fun `block detection rejects status 401`() {
-        assertEquals(false, BlockedRequestCompatibility.isCanonicalBurpBlock(401, "{\"detail\":\"Unauthorized\"}"))
+        assertEquals(false, blockedByBurp(401, "{\"detail\":\"Unauthorized\"}"))
     }
 
     @Test fun `block detection matches multiline JSON body with newlines`() {
         // \s includes \n, so multi-line JSON bodies also match.
-        assertTrue(BlockedRequestCompatibility.isCanonicalBurpBlock(400, "{\n\"detail\":\"Bad Request\"\n}"))
+        assertTrue(blockedByBurp(400, "{\n\"detail\":\"Bad Request\"\n}"))
     }
+
+    @Test fun `Codex response streams are never acknowledged`() {
+        assertEquals(
+            false,
+            BlockedRequestCompatibility.isCanonicalBurpBlock(
+                400,
+                "{\"detail\":\"Bad Request\"}",
+                "POST",
+                "/backend-api/codex/responses",
+            ),
+        )
+        assertEquals(
+            false,
+            BlockedRequestCompatibility.isCanonicalBurpBlock(
+                403,
+                "{\"detail\":\"Forbidden\"}",
+                "POST",
+                "/backend-api/codex/responses/abc",
+            ),
+        )
+    }
+
+    private fun blockedByBurp(status: Short, body: String): Boolean =
+        BlockedRequestCompatibility.isCanonicalBurpBlock(status, body, "POST", "/otlp/v1/metric")
 }
