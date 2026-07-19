@@ -28,7 +28,9 @@ class RegexDetector {
     fun detect(text: String): List<Span> = patterns.flatMap { (kind, regex) ->
         regex.findAll(text).map { match ->
             val group = if (match.groupValues.size > 1 && match.groups[1] != null) match.groups[1]!! else match.groups[0]!!
-            Span(group.range.first, group.range.last + 1, kind)
+            // group.range uses UTF-16 code-unit indices on JVM, but TextRedactor.replace
+            // treats span offsets as code-point indices (consistent with the Python detector).
+            Span(text.codePointCount(0, group.range.first), text.codePointCount(0, group.range.last + 1), kind)
         }.toList()
     }.sortedBy { it.start }.fold(mutableListOf()) { accepted, span ->
         if (accepted.none { span.start < it.end && it.start < span.end }) accepted += span

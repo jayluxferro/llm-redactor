@@ -22,6 +22,11 @@ NER_CONFIDENCE_FLOOR: float = 0.5
 # spaCy entity labels to skip (e.g. CARDINAL, ORDINAL — not PII).
 _labels_to_ignore: set[str] = set()
 
+# spaCy labels which are never direct PII. Presidio emits warnings for these
+# unmapped entities, and allowing them into the redaction path can corrupt
+# structured protocol payloads without providing a privacy benefit.
+_ALWAYS_IGNORED_LABELS = {"FAC", "PERCENT", "LAW"}
+
 
 def configure_ner(
     *,
@@ -37,7 +42,7 @@ def configure_ner(
     if confidence_floor is not None:
         NER_CONFIDENCE_FLOOR = confidence_floor
     if labels_to_ignore is not None:
-        _labels_to_ignore = {lbl.upper() for lbl in labels_to_ignore}
+        _labels_to_ignore = {lbl.upper() for lbl in labels_to_ignore} | _ALWAYS_IGNORED_LABELS
 
 
 def _get_analyzer():
@@ -106,7 +111,12 @@ def detect_ner(text: str, language: str = "en") -> list[Span]:
             continue
         seen.add(key)
 
-        kind = PRESIDIO_KIND_MAP.get(result.entity_type, result.entity_type.lower())
+        kind = PRESIDIO_KIND_MAP.get(result.entity_type)
+        # Unmapped spaCy labels are not part of this project's PII taxonomy.
+        # Keeping them as ad-hoc kinds (for example FAC) causes the proxy to
+        # mutate protocol fields on a best-effort guess, which is unsafe.
+        if kind is None:
+            continue
         spans.append(
             Span(
                 start=result.start,

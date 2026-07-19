@@ -1,8 +1,15 @@
 # Burp LLM Redactor
 
 This Kotlin Burp extension applies Option B redaction to outbound HTTP(S)
-request query/body content and client-to-server WebSocket text frames. It
-enables every sensitive-data category by default.
+request query/body content. It enables every sensitive-data category by default.
+Client-to-server WebSocket frames are observed in the activity log but pass through
+unchanged: streaming protocols are stateful and cannot safely tolerate synchronous
+inspection or rewriting.
+
+When Burp locally blocks an endpoint with its canonical `400 {"detail":"Bad Request"}`
+response, the extension returns a local `204 No Content` acknowledgement instead. This
+works for any matching blocked endpoint, does **not** allow it to leave Burp, and does
+not retain its payload.
 
 ## Build and install
 
@@ -59,10 +66,15 @@ the plugin continues with its local regex fallback.
   request bodies through the optional local ONNX endpoint; image responses and
   non-image multipart file parts are unchanged.
 - Re-encodes gzip, deflate, and zstd bodies after redaction.
-- Leaves responses, SSE events, server-to-client WebSocket frames, headers,
+- Leaves responses, SSE events, all WebSocket frames, headers,
   signed requests, Brotli, unreadable/binary content, and JSON encrypted/
   ciphertext values unchanged. Opaque ciphertext must not be modified because
-  doing so invalidates its authentication tag.
+  doing so invalidates its authentication tag. A request that contains an encrypted
+  protocol envelope passes through unchanged because its authentication can cover
+  surrounding fields.
+- Converts Burp's canonical local block response (`400 {"detail":"Bad Request"}`) into a
+  local `204` acknowledgement. This keeps clients operational while Burp's blocking
+  policy remains in force; it does not mask upstream errors with a different body.
 - Shows a live, bounded activity table with time, host, protocol, outcome,
   detection count, and pass-through reason. Records are in memory only and
   contain no body text, matches, placeholders, or credentials.

@@ -16,6 +16,16 @@ class TextRedactor(
         }
     }
 
+    /** Regex-only redaction that never contacts the detector.
+     *  Suitable for latency-sensitive transports such as WebSocket frames
+     *  where even a loopback HTTP round-trip may stall the stream. */
+    fun redactWithRegex(text: String): RedactionOutcome {
+        if (text.isEmpty()) return RedactionOutcome(text, emptyList(), false)
+        val prepared = prepare(text)
+        val spans = fallback.detect(prepared.detectorText).withoutProtected(prepared)
+        return RedactionOutcome(replace(text, spans), spans, true)
+    }
+
     fun redactBatch(texts: List<String>): List<RedactionOutcome> {
         val prepared = texts.map(::prepare)
         return try {
@@ -59,12 +69,27 @@ class TextRedactor(
     private data class CodePointRange(val start: Int, val end: Int)
 
     companion object {
+        /**
+         * Ciphertext and signed protocol envelopes cannot be safely rewritten. A
+         * caller must pass the complete enclosing message through unchanged, not
+         * merely preserve the token itself, because authentication can cover the
+         * surrounding JSON fields as well.
+         */
+        fun isOpaqueProtocolPayload(text: String): Boolean = opaqueProtocolMarker.containsMatchIn(text)
+
         private val opaqueValues = listOf(
             Regex(
                 """(?i)"(?:encrypted(?:[_-]?(?:content|payload|data))?|cipher(?:text|[_-]?(?:content|payload|data))?|sealed(?:[_-]?(?:content|payload|data))?)"\s*:\s*"((?:\\.|[^"\\])*)""",
             ),
             // Image attachments need pixel redaction rather than text-span replacement.
             Regex("""(data:image/(?:png|jpeg);base64,[A-Za-z0-9+/=\r\n]+)"""),
+            // Fernet ciphertext begins with gAAAA. It can appear in protocol fields
+            // whose key is not descriptive; modifying a single character invalidates
+            // the authenticated encryption token.
+            Regex("""(gAAAA[A-Za-z0-9_-]{20,}={0,2})"""),
+        )
+        private val opaqueProtocolMarker = Regex(
+            """(?i)"(?:encrypted(?:[_-]?(?:content|payload|data))?|cipher(?:text|[_-]?(?:content|payload|data))?|sealed(?:[_-]?(?:content|payload|data))?)"\s*:|gAAAA[A-Za-z0-9_-]{20,}={0,2}""",
         )
     }
 

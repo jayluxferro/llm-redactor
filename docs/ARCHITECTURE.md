@@ -205,15 +205,22 @@ local Python detector service as the authoritative detector:
    service. That service runs regex, NER, and any enabled local-LLM validation.
 3. The Kotlin plugin replaces returned spans with typed placeholders. On service
    failure it falls back to its local regex detector.
-4. The transformed request is re-encoded and forwarded. Responses, SSE events,
-   and server-to-client WebSocket frames are deliberately not restored or modified.
+4. The transformed HTTP request is re-encoded and forwarded. Responses, SSE events,
+   and all WebSocket frames are deliberately not restored or modified, except that
+   Burp's canonical local block response (`400 {"detail":"Bad Request"}`) is changed
+   to a local `204` acknowledgement. This preserves Burp's egress block while keeping
+   fire-and-forget clients from treating it as a transport failure. WebSocket
+   frames are logged as streaming-protocol pass-through events because a synchronous
+   detector call or byte-level rewrite can break stateful streaming clients.
 
 Supported payload handling is UTF-8 text, JSON, XML, URL-encoded forms, multipart
 text payloads, generic protobuf length-delimited UTF-8 fields, and gzip/deflate/zstd
-content encodings. Brotli, binary WebSocket frames, signed/authenticated requests,
+content encodings. Brotli, all WebSocket frames, signed/authenticated requests,
 unreadable payloads, and JSON encrypted/ciphertext values safely pass through; the
 last category is preserved byte-for-byte because ciphertext integrity is protocol
-critical. The live Activity UI is bounded and shows only time, host, protocol,
+critical. A message containing an encrypted protocol envelope is passed through as
+a whole, since authentication can cover fields surrounding the ciphertext. The live
+Activity UI is bounded and shows only time, host, protocol,
 result, detection counts, and pass-through reason; it never stores request bytes,
 detected values, or reverse maps.
 

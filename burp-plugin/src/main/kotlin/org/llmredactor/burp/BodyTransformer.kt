@@ -42,6 +42,9 @@ class BodyTransformer(
         mediaType: String,
         encoding: String,
     ): BodyTransform {
+        if (!hasImageSignature(decoded, mediaType)) {
+            return BodyTransform(original, 0, false, "invalid-image-body")
+        }
         return try {
             val result = imageRedactor.redact(decoded, mediaType)
             val encoded = encode(result.body, encoding)
@@ -68,6 +71,11 @@ class BodyTransformer(
         return path.substring(0, marker + 1) + redacted to detections
     }
 
+    fun isOpaqueProtocolPayload(body: ByteArray): Boolean {
+        val text = body.toString(StandardCharsets.UTF_8)
+        return '\uFFFD' !in text && TextRedactor.isOpaqueProtocolPayload(text)
+    }
+
     private fun redactUtf8(bytes: ByteArray): BodyTransform {
         val text = bytes.toString(StandardCharsets.UTF_8)
         // Replacement characters mean this is binary or a legacy charset; leave it alone.
@@ -90,6 +98,7 @@ class BodyTransformer(
             val encoded = match.groups[2]!!.value.replace(Regex("\\s"), "")
             val replacement = try {
                 val source = Base64.getDecoder().decode(encoded)
+                if (!hasImageSignature(source, mediaType)) return@forEach
                 val result = imageRedactor.redact(source, mediaType)
                 detections += result.detections
                 "data:$mediaType;base64," + Base64.getEncoder().encodeToString(result.body)
@@ -183,6 +192,15 @@ class BodyTransformer(
     private companion object {
         val IMAGE_TYPES = setOf("image/jpeg", "image/png")
         val dataImageUrl = Regex("""data:(image/(?:png|jpeg));base64,([A-Za-z0-9+/=\r\n]+)""")
+
+        fun hasImageSignature(bytes: ByteArray, mediaType: String): Boolean = when (mediaType) {
+            "image/png" -> bytes.size >= 8 && bytes.copyOfRange(0, 8).contentEquals(
+                byteArrayOf(0x89.toByte(), 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a),
+            )
+            "image/jpeg" -> bytes.size >= 3 && bytes[0] == 0xff.toByte() &&
+                bytes[1] == 0xd8.toByte() && bytes[2] == 0xff.toByte()
+            else -> false
+        }
     }
 
     private data class EmbeddedImageTransform(val text: String, val detections: Int)
