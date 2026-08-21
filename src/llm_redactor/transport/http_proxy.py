@@ -21,6 +21,13 @@ from ..image.redactor import ImageRedactionUnavailable, InvalidImage, OnnxImageR
 from ..observability import log_event
 from ..pipeline.option_b import OptionBPipeline, RefusalError
 from ..redact.placeholder import PlaceholderGenerator, redact
+from ..redact.raw_surgery import (
+    RawRedaction,
+    SSETextRestorer,
+    SurgeryError,
+    redact_signed_request,
+    restore_response_bytes,
+)
 from ..redact.restore import restore
 from ..transport.cloud import (
     forward_anthropic_messages,
@@ -133,6 +140,7 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
             path="/v1/chat/completions",
             streaming=bool(body.get("stream")),
         )
+        _get_pipeline()._stats["tools_bypass"] += 1
         return await _forward_openai_transparent(body, config, upstream_headers)
 
     # Allow per-request overrides via extra_body.redactor.
@@ -414,8 +422,70 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
         k: v for k, v in request.headers.items() if k.lower() not in _skip_hop
     }
 
-    # Signed Anthropic blocks → raw byte passthrough (no redaction possible).
+    # Signed Anthropic blocks → surgical redaction on the raw bytes. A JSON
+    # round-trip would break the block signatures, so eligible text spans are
+    # spliced out at the byte level, leaving signed regions untouched. If
+    # nothing redactable is found — or surgery is impossible — fall back to
+    # the original raw passthrough behaviour.
     if isinstance(body, dict) and _body_has_signed_blocks(body):
+        pipeline._stats["requests"] += 1
+        gen = PlaceholderGenerator(session_tag=pipeline.request_placeholder_tag())
+        surgical: RawRedaction | None = None
+        try:
+            surgical = await redact_signed_request(raw_body, pipeline.detect_spans, gen)
+        except SurgeryError as exc:
+            pipeline._stats["surgery_failed"] += 1
+            log_event("proxy_anthropic_surgery_failed", error=str(exc)[:200])
+        if surgical is not None and surgical.detections:
+            pipeline._stats["detections"] += len(surgical.detections)
+            pipeline._stats["signed_surgical"] += 1
+            if surgical.whole_token_fallbacks:
+                pipeline._stats["whole_token_fallback"] += surgical.whole_token_fallbacks
+            log_event(
+                "proxy_anthropic_signed_surgical",
+                detections=len(surgical.detections),
+                whole_token_fallbacks=surgical.whole_token_fallbacks,
+            )
+            if body.get("stream"):
+                restorer = SSETextRestorer(surgical.reverse_map)
+
+                async def stream_surgical() -> AsyncIterator[bytes]:
+                    async for chunk in forward_anthropic_raw_stream(
+                        surgical.new_raw,
+                        config.cloud_target,
+                        upstream_headers=raw_passthrough_headers,
+                    ):
+                        yield restorer.feed_chunk(chunk)
+                    yield restorer.flush()
+
+                return StreamingResponse(
+                    stream_surgical(),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "X-Accel-Buffering": "no",
+                        "X-LLM-Redactor-Mode": "signed-surgical",
+                    },
+                )
+
+            resp_bytes, status, resp_headers = await forward_anthropic_raw(
+                surgical.new_raw,
+                config.cloud_target,
+                upstream_headers=raw_passthrough_headers,
+            )
+            out_headers = {
+                k: v
+                for k, v in resp_headers.items()
+                if k.lower() not in ("transfer-encoding", "content-length", "content-encoding")
+            }
+            out_headers["X-LLM-Redactor-Mode"] = "signed-surgical"
+            return Response(
+                content=restore_response_bytes(resp_bytes, surgical.reverse_map),
+                status_code=status,
+                headers=out_headers,
+            )
+
+        pipeline._stats["signed_passthrough"] += 1
         log_event(
             "proxy_anthropic_signed_passthrough", message_count=len(body.get("messages") or [])
         )
@@ -494,10 +564,14 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
     if pipeline.config.pipeline.opt_b_redact.strict:
         low_conf = [s for s in all_detections if s.confidence < 0.5]
         if low_conf:
+            pipeline._stats["requests"] += 1
+            pipeline._stats["refusals"] += 1
             return _refusal_response(
                 RefusalError(reason="low_confidence_detection", spans=low_conf)
             )
 
+    pipeline._stats["requests"] += 1
+    pipeline._stats["detections"] += len(all_detections)
     log_event(
         "proxy_anthropic_prepared",
         detections=len(all_detections),

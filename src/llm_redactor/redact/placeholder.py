@@ -45,10 +45,14 @@ class PlaceholderGenerator:
 
     def get_placeholder(self, span: Span) -> str:
         """Return a stable placeholder for the given span's text."""
-        if span.text in self._seen:
-            return self._seen[span.text]
-        placeholder = self._next_placeholder(span.kind)
-        self._seen[span.text] = placeholder
+        return self.placeholder_for(span.text, span.kind)
+
+    def placeholder_for(self, text: str, kind: str) -> str:
+        """Return a stable placeholder for arbitrary text (no Span needed)."""
+        if text in self._seen:
+            return self._seen[text]
+        placeholder = self._next_placeholder(kind)
+        self._seen[text] = placeholder
         return placeholder
 
 

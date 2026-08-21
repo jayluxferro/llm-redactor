@@ -69,6 +69,11 @@ class OptionBPipeline:
             "requests": 0,
             "detections": 0,
             "refusals": 0,
+            "signed_passthrough": 0,
+            "signed_surgical": 0,
+            "surgery_failed": 0,
+            "whole_token_fallback": 0,
+            "tools_bypass": 0,
         }
     )
 
