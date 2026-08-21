@@ -188,7 +188,7 @@ async def test_surgical_redaction_whole_token_fallback_on_unmappable() -> None:
 @pytest.mark.asyncio
 async def test_surgical_redaction_skips_signed_content() -> None:
     secret = "sk-supersecret-value"
-    raw = _signed_body(f"ignore this", thinking=f"the key is {secret}")
+    raw = _signed_body("ignore this", thinking=f"the key is {secret}")
     # Detector claims the secret is present in *any* text it sees; the signed
     # thinking content must still never be modified.
     spans = [
