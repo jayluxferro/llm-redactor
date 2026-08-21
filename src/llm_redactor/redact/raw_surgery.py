@@ -122,9 +122,7 @@ def _scan_value(
     if b == 0x22:  # string value
         value, end = _scan_string(buf, i)
         key = path[-1] if path else None
-        protected = inherited_protected or (
-            isinstance(key, str) and key in PROTECTED_KEYS
-        )
+        protected = inherited_protected or (isinstance(key, str) and key in PROTECTED_KEYS)
         tokens.append(
             StringToken(path=path, value=value, raw_start=i, raw_end=end, protected=protected)
         )
@@ -245,12 +243,7 @@ def _is_redactable(token: StringToken) -> bool:
     if token.protected or not token.value:
         return False
     p = token.path
-    if (
-        len(p) == 3
-        and p[0] == "messages"
-        and isinstance(p[1], int)
-        and p[2] == "content"
-    ):
+    if len(p) == 3 and p[0] == "messages" and isinstance(p[1], int) and p[2] == "content":
         return True
     if (
         len(p) == 5

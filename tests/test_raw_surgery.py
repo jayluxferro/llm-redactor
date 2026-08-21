@@ -177,9 +177,7 @@ async def test_surgical_redaction_whole_token_fallback_on_unmappable() -> None:
         raise SurgeryError("forced")
 
     gen = PlaceholderGenerator()
-    with patch(
-        "llm_redactor.redact.raw_surgery._build_offset_map", new=broken_map
-    ):
+    with patch("llm_redactor.redact.raw_surgery._build_offset_map", new=broken_map):
         result = await redact_signed_request(raw, _fake_detect(spans), gen)
     assert result.whole_token_fallbacks == 1
     doc = json.loads(result.new_raw)
@@ -324,11 +322,7 @@ def test_signed_request_with_pii_is_surgically_redacted(client: TestClient) -> N
         sent["body"] = body_bytes
         return (
             json.dumps(
-                {
-                    "content": [
-                        {"type": "text", "text": f"noted {PREFIX}EMAIL_1{SUFFIX} thanks"}
-                    ]
-                }
+                {"content": [{"type": "text", "text": f"noted {PREFIX}EMAIL_1{SUFFIX} thanks"}]}
             ).encode("utf-8"),
             200,
             {"content-type": "application/json"},
@@ -385,9 +379,11 @@ def test_signed_request_without_detections_passes_through(client: TestClient) ->
 
 
 def test_unsigned_request_counts_requests_and_detections(client: TestClient) -> None:
-    body = {"model": "claude-test", "max_tokens": 8, "messages": [
-        {"role": "user", "content": "ping bob@example.com"}
-    ]}
+    body = {
+        "model": "claude-test",
+        "max_tokens": 8,
+        "messages": [{"role": "user", "content": "ping bob@example.com"}],
+    }
 
     async def mock_forward(outgoing: dict, config: Any, **kwargs: Any):
         return {"content": [{"type": "text", "text": "pong"}]}
