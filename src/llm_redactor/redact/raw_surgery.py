@@ -22,6 +22,7 @@ import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
+from ..detect.types import Span
 from ..observability import log_event
 from .placeholder import PREFIX as PH_PREFIX
 from .placeholder import SUFFIX as PH_SUFFIX
@@ -56,7 +57,7 @@ class RawRedaction:
 
     new_raw: bytes
     reverse_map: dict[str, str] = field(default_factory=dict)
-    detections: list[object] = field(default_factory=list)
+    detections: list[Span] = field(default_factory=list)
     whole_token_fallbacks: int = 0
 
 
@@ -340,7 +341,7 @@ def _apply_ops(raw: bytes, ops: list[_Op]) -> bytes:
 
 async def redact_signed_request(
     raw: bytes,
-    detect_spans: Callable[[str], Awaitable[list[object]]],
+    detect_spans: Callable[[str], Awaitable[list[Span]]],
     gen,
 ) -> RawRedaction:
     """Surgically redact eligible text in a signed-block request body.
