@@ -113,6 +113,10 @@ class PipelineConfig:
     image_redaction: ImageRedactionConfig = field(default_factory=ImageRedactionConfig)
     # When true, each HTTP/proxy request gets random bytes in placeholders (e.g. ⟨EMAIL_1·a1b2c3d⟩).
     placeholder_request_tag: bool = False
+    # "per_request" (random each request) or "per_conversation" (stable hash of
+    # system + first user message). Stable tags keep redacted bytes identical
+    # across a session's turns, which upstream prompt caching requires.
+    placeholder_tag_mode: str = "per_request"
     opt_a_local_only: OptionConfig = field(default_factory=OptionConfig)
     opt_b_redact: OptionBConfig = field(default_factory=OptionBConfig)
     opt_c_rephrase: OptionCConfig = field(default_factory=OptionCConfig)

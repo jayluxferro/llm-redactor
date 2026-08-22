@@ -52,6 +52,17 @@ class StringToken:
 
 
 @dataclass
+class ObjectRecord:
+    """One JSON object with its brace extent and block context."""
+
+    path: tuple[object, ...]
+    brace_open: int  # offset of the opening '{'
+    brace_close: int  # offset of the closing '}'
+    block_type: str | None = None
+    protected: bool = False
+
+
+@dataclass
 class RawRedaction:
     """Outcome of a surgical request redaction."""
 
@@ -114,6 +125,7 @@ def _scan_value(
     path: tuple[object, ...],
     inherited_protected: bool,
     tokens: list[StringToken],
+    objects: list[ObjectRecord] | None = None,
 ) -> int:
     """Scan one JSON value at ``i``; append string tokens. Returns end offset."""
     i = _skip_ws(buf, i)
@@ -129,9 +141,9 @@ def _scan_value(
         )
         return end
     if b == 0x7B:  # '{'
-        return _scan_object(buf, i, path, inherited_protected, tokens)
+        return _scan_object(buf, i, path, inherited_protected, tokens, objects)
     if b == 0x5B:  # '['
-        return _scan_array(buf, i, path, inherited_protected, tokens)
+        return _scan_array(buf, i, path, inherited_protected, tokens, objects)
     if b in _LITERAL_STARTS:
         j = i
         while j < len(buf) and buf[j] not in _WS and buf[j] not in b",}]":
@@ -157,13 +169,14 @@ def _scan_array(
     path: tuple[object, ...],
     inherited_protected: bool,
     tokens: list[StringToken],
+    objects: list[ObjectRecord] | None = None,
 ) -> int:
     i = _skip_ws(buf, i + 1)
     if i < len(buf) and buf[i] == 0x5D:
         return i + 1
     idx = 0
     while True:
-        i = _scan_value(buf, i, (*path, idx), inherited_protected, tokens)
+        i = _scan_value(buf, i, (*path, idx), inherited_protected, tokens, objects)
         i = _skip_ws(buf, i)
         if i >= len(buf):
             raise SurgeryError("unterminated array")
@@ -182,11 +195,15 @@ def _scan_object(
     path: tuple[object, ...],
     inherited_protected: bool,
     tokens: list[StringToken],
+    objects: list[ObjectRecord] | None = None,
 ) -> int:
+    brace_open = i
     i = _skip_ws(buf, i + 1)
     tokens_start = len(tokens)
     block_type: str | None = None
     if i < len(buf) and buf[i] == 0x7D:
+        if objects is not None:
+            objects.append(ObjectRecord(path=path, brace_open=brace_open, brace_close=i))
         return i + 1
     while True:
         i = _skip_ws(buf, i)
@@ -196,7 +213,7 @@ def _scan_object(
             raise SurgeryError(f"expected ':' at offset {i}")
         i += 1
         value_token_count = len(tokens)
-        i = _scan_value(buf, i, (*path, key), inherited_protected, tokens)
+        i = _scan_value(buf, i, (*path, key), inherited_protected, tokens, objects)
         if (
             key == "type"
             and len(tokens) == value_token_count + 1
@@ -221,6 +238,21 @@ def _scan_object(
         for tok in tokens[tokens_start:]:
             if tok.block_type is None and len(tok.path) == direct_depth:
                 tok.block_type = block_type
+    if objects is not None:
+        parent_key = path[-1] if path else None
+        objects.append(
+            ObjectRecord(
+                path=path,
+                brace_open=brace_open,
+                brace_close=i,
+                block_type=block_type,
+                protected=(
+                    inherited_protected
+                    or block_type in PROTECTED_BLOCK_TYPES
+                    or (isinstance(parent_key, str) and parent_key in PROTECTED_KEYS)
+                ),
+            )
+        )
     return i + 1
 
 
@@ -237,6 +269,53 @@ def index_string_tokens(raw: bytes) -> list[StringToken]:
     if _skip_ws(raw, end) != len(raw):
         raise SurgeryError("trailing bytes after top-level value")
     return tokens
+
+
+def index_objects(raw: bytes) -> list[ObjectRecord]:
+    """Index every JSON object in ``raw`` with brace extents and context.
+
+    Companion to :func:`index_string_tokens`; raises :class:`SurgeryError`
+    on malformed JSON.
+    """
+    tokens: list[StringToken] = []
+    objects: list[ObjectRecord] = []
+    i = _skip_ws(raw, 0)
+    end = _scan_value(raw, i, (), False, tokens, objects)
+    if _skip_ws(raw, end) != len(raw):
+        raise SurgeryError("trailing bytes after top-level value")
+    return objects
+
+
+@dataclass
+class InsertOp:
+    """Insert a field right after a target object's opening brace."""
+
+    brace_open: int
+    field: bytes  # JSON field text without trailing comma
+
+
+def insert_fields(raw: bytes, ops: list[InsertOp]) -> bytes:
+    """Apply field insertions; comma handling is automatic for empty objects.
+
+    Ops are applied right-to-left so earlier offsets stay valid; duplicate
+    targets are rejected (one field per object per pass).
+    """
+    if not ops:
+        return raw
+    seen: set[int] = set()
+    for op in ops:
+        if op.brace_open in seen:
+            raise SurgeryError(f"duplicate insert target at {op.brace_open}")
+        seen.add(op.brace_open)
+        if op.brace_open >= len(raw) or raw[op.brace_open] != 0x7B:
+            raise SurgeryError(f"insert target {op.brace_open} is not an opening brace")
+    out = raw
+    for op in sorted(ops, key=lambda o: o.brace_open, reverse=True):
+        j = _skip_ws(out, op.brace_open + 1)
+        empty = j < len(out) and out[j] == 0x7D
+        text = op.field if empty else op.field + b","
+        out = out[: op.brace_open + 1] + text + out[op.brace_open + 1 :]
+    return out
 
 
 def _is_redactable(token: StringToken) -> bool:

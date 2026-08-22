@@ -7,7 +7,9 @@ text, and re-emits corrected SSE chunks.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import secrets
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -35,6 +37,36 @@ from ..transport.cloud import (
     forward_anthropic_raw_stream,
     forward_chat_completion_stream,
 )
+
+
+def _placeholder_session_tag(body: dict[str, Any], pipeline: OptionBPipeline) -> str | None:
+    """Session tag for placeholders: per-request random, or stable per conversation.
+
+    Per-conversation tags keep redacted bytes identical across a session's
+    turns — required for upstream prompt caching to see a stable prefix.
+    """
+    if not pipeline.config.pipeline.placeholder_request_tag:
+        return None
+    mode = getattr(pipeline.config.pipeline, "placeholder_tag_mode", "per_request")
+    if mode != "per_conversation":
+        return secrets.token_hex(4)
+    system = body.get("system")
+    if isinstance(system, list):
+        system_text = "\n".join(
+            block.get("text", "") for block in system if isinstance(block, dict)
+        )
+    else:
+        system_text = system if isinstance(system, str) else ""
+    first_user = ""
+    for message in body.get("messages") or []:
+        if message.get("role") == "user":
+            content = message.get("content", "")
+            first_user = (
+                content if isinstance(content, str) else json.dumps(content, sort_keys=True)
+            )
+            break
+    seed = json.dumps({"s": system_text, "u": first_user}, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8]
 
 
 def _body_has_signed_blocks(body: dict[str, Any]) -> bool:
@@ -429,7 +461,7 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
     # the original raw passthrough behaviour.
     if isinstance(body, dict) and _body_has_signed_blocks(body):
         pipeline._stats["requests"] += 1
-        gen = PlaceholderGenerator(session_tag=pipeline.request_placeholder_tag())
+        gen = PlaceholderGenerator(session_tag=_placeholder_session_tag(body, pipeline))
         surgical: RawRedaction | None = None
         try:
             surgical = await redact_signed_request(raw_body, pipeline.detect_spans, gen)
@@ -526,7 +558,7 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
     messages = body.get("messages", [])
     combined_reverse_map: dict[str, str] = {}
     all_detections: list[Span] = []
-    ph_tag = pipeline.request_placeholder_tag()
+    ph_tag = _placeholder_session_tag(body, pipeline)
 
     outgoing_messages = []
     gen = PlaceholderGenerator(session_tag=ph_tag)
@@ -809,6 +841,9 @@ async def redactor_config() -> JSONResponse:
                     "model_configured": bool(cfg.pipeline.image_redaction.model_path),
                 },
                 "placeholder_request_tag": cfg.pipeline.placeholder_request_tag,
+                "placeholder_tag_mode": getattr(
+                    cfg.pipeline, "placeholder_tag_mode", "per_request"
+                ),
             },
             "transport": {
                 "tools_policy": cfg.transport.tools_policy,
