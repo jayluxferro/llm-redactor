@@ -10,12 +10,25 @@ import httpx
 
 from ..config import CloudTargetConfig
 
+# Structured upstream timeout. A single flat float applies the same deadline
+# to connect, read, write, and pool — a non-streaming LLM call that takes
+# longer than that to produce its first byte dies with httpx.ReadTimeout even
+# though the upstream is healthy and working. Separate the phases: connect
+# fails fast, read gets a generous window (non-streaming responses send
+# nothing until generation completes; streaming resets the clock per chunk).
+DEFAULT_UPSTREAM_TIMEOUT: httpx.Timeout = httpx.Timeout(
+    connect=10.0,
+    read=600.0,
+    write=60.0,
+    pool=10.0,
+)
+
 
 async def forward_chat_completion(
     body: dict[str, Any],
     config: CloudTargetConfig,
     *,
-    timeout: float = 120.0,
+    timeout: httpx.Timeout = DEFAULT_UPSTREAM_TIMEOUT,
     upstream_headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Forward an OpenAI-compatible chat completion request to the cloud target.
@@ -61,7 +74,7 @@ async def forward_chat_completion_stream(
     body: dict[str, Any],
     config: CloudTargetConfig,
     *,
-    timeout: float = 120.0,
+    timeout: httpx.Timeout = DEFAULT_UPSTREAM_TIMEOUT,
     upstream_headers: dict[str, str] | None = None,
 ) -> AsyncIterator[bytes]:
     """Forward a streaming chat completion request and yield raw SSE chunks.
@@ -92,7 +105,7 @@ async def forward_anthropic_messages(
     body: dict[str, Any],
     config: CloudTargetConfig,
     *,
-    timeout: float = 120.0,
+    timeout: httpx.Timeout = DEFAULT_UPSTREAM_TIMEOUT,
     upstream_headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Forward an Anthropic Messages API request.
@@ -126,7 +139,7 @@ async def forward_anthropic_raw(
     body_bytes: bytes,
     config: CloudTargetConfig,
     *,
-    timeout: float = 120.0,
+    timeout: httpx.Timeout = DEFAULT_UPSTREAM_TIMEOUT,
     upstream_headers: dict[str, str] | None = None,
 ) -> tuple[bytes, int, dict[str, str]]:
     """Forward raw request bytes to the Anthropic Messages endpoint.
@@ -160,7 +173,7 @@ async def forward_anthropic_raw_stream(
     body_bytes: bytes,
     config: CloudTargetConfig,
     *,
-    timeout: float = 120.0,
+    timeout: httpx.Timeout = DEFAULT_UPSTREAM_TIMEOUT,
     upstream_headers: dict[str, str] | None = None,
 ) -> AsyncIterator[bytes]:
     """Stream variant of :func:`forward_anthropic_raw`."""
@@ -189,7 +202,7 @@ async def forward_anthropic_messages_stream(
     body: dict[str, Any],
     config: CloudTargetConfig,
     *,
-    timeout: float = 120.0,
+    timeout: httpx.Timeout = DEFAULT_UPSTREAM_TIMEOUT,
     upstream_headers: dict[str, str] | None = None,
 ) -> AsyncIterator[bytes]:
     """Forward a streaming Anthropic Messages request and yield raw SSE chunks."""

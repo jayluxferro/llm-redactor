@@ -72,7 +72,7 @@ async def validate_spans(
     # Deduplicate by (text, kind) — the same phrase detected across
     # multiple messages only needs one LLM verdict.
     def _key(s: Span) -> tuple[str, str]:
-        return (s.text.strip().lower(), s.kind)
+        return s.text.strip().lower(), s.kind
 
     seen: dict[tuple[str, str], int] = {}  # key → index in unique_spans
     deduped: list[Span] = []

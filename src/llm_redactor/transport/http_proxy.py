@@ -482,13 +482,19 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
                 restorer = SSETextRestorer(surgical.reverse_map)
 
                 async def stream_surgical() -> AsyncIterator[bytes]:
-                    async for chunk in forward_anthropic_raw_stream(
-                        surgical.new_raw,
-                        config.cloud_target,
-                        upstream_headers=raw_passthrough_headers,
-                    ):
-                        yield restorer.feed_chunk(chunk)
-                    yield restorer.flush()
+                    try:
+                        async for chunk in forward_anthropic_raw_stream(
+                            surgical.new_raw,
+                            config.cloud_target,
+                            upstream_headers=raw_passthrough_headers,
+                        ):
+                            yield restorer.feed_chunk(chunk)
+                        yield restorer.flush()
+                    except httpx.TimeoutException as e:
+                        err = json.dumps(
+                            {"error": {"type": "upstream_timeout", "message": str(e)}}
+                        )
+                        yield f"event: error\ndata: {err}\n\n".encode()
 
                 return StreamingResponse(
                     stream_surgical(),
@@ -500,11 +506,17 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
                     },
                 )
 
-            resp_bytes, status, resp_headers = await forward_anthropic_raw(
-                surgical.new_raw,
-                config.cloud_target,
-                upstream_headers=raw_passthrough_headers,
-            )
+            try:
+                resp_bytes, status, resp_headers = await forward_anthropic_raw(
+                    surgical.new_raw,
+                    config.cloud_target,
+                    upstream_headers=raw_passthrough_headers,
+                )
+            except httpx.TimeoutException as e:
+                return JSONResponse(
+                    status_code=504,
+                    content={"error": {"type": "upstream_timeout", "message": str(e)}},
+                )
             out_headers = {
                 k: v
                 for k, v in resp_headers.items()
@@ -524,10 +536,16 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
         if body.get("stream"):
 
             async def stream_raw():
-                async for chunk in forward_anthropic_raw_stream(
-                    raw_body, config.cloud_target, upstream_headers=raw_passthrough_headers
-                ):
-                    yield chunk
+                try:
+                    async for chunk in forward_anthropic_raw_stream(
+                        raw_body, config.cloud_target, upstream_headers=raw_passthrough_headers
+                    ):
+                        yield chunk
+                except httpx.TimeoutException as e:
+                    err = json.dumps(
+                        {"error": {"type": "upstream_timeout", "message": str(e)}}
+                    )
+                    yield f"event: error\ndata: {err}\n\n".encode()
 
             return StreamingResponse(
                 stream_raw(),
