@@ -491,9 +491,7 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
                             yield restorer.feed_chunk(chunk)
                         yield restorer.flush()
                     except httpx.TimeoutException as e:
-                        err = json.dumps(
-                            {"error": {"type": "upstream_timeout", "message": str(e)}}
-                        )
+                        err = json.dumps({"error": {"type": "upstream_timeout", "message": str(e)}})
                         yield f"event: error\ndata: {err}\n\n".encode()
 
                 return StreamingResponse(
@@ -542,9 +540,7 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
                     ):
                         yield chunk
                 except httpx.TimeoutException as e:
-                    err = json.dumps(
-                        {"error": {"type": "upstream_timeout", "message": str(e)}}
-                    )
+                    err = json.dumps({"error": {"type": "upstream_timeout", "message": str(e)}})
                     yield f"event: error\ndata: {err}\n\n".encode()
 
             return StreamingResponse(
