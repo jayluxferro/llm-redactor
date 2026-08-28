@@ -7,6 +7,7 @@ Uses a mock cloud server (httpx mock) to capture what was actually sent.
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import patch
 
@@ -16,6 +17,7 @@ from fastapi.testclient import TestClient
 from llm_redactor.config import Config
 from llm_redactor.pipeline.option_b import OptionBPipeline, RefusalError
 from llm_redactor.redact.placeholder import PREFIX, SUFFIX
+from llm_redactor.transport.cloud import StreamResult
 from llm_redactor.transport.http_proxy import app, configure
 
 # --- Pipeline unit tests (no HTTP) ---
@@ -289,11 +291,20 @@ def test_http_proxy_refuses_tools_when_policy_refuse() -> None:
     assert err["reason"] == "tools_or_functions_present"
 
 
-async def _fake_sse_stream(*_a: Any, **_k: Any):
+async def _fake_sse_stream(*_a: Any, **_k: Any) -> StreamResult:
     ph = f"{PREFIX}EMAIL_1{SUFFIX}"
     ev: dict[str, Any] = {"choices": [{"delta": {"content": f"notified {ph}"}}]}
-    yield f"data: {json.dumps(ev)}\n\n".encode()
-    yield b"data: [DONE]\n\n"
+
+    async def _gen() -> AsyncIterator[bytes]:
+        yield f"data: {json.dumps(ev)}\n\n".encode()
+        yield b"data: [DONE]\n\n"
+
+    return StreamResult(
+        status_code=200,
+        content_type="text/event-stream",
+        headers={},
+        iterator=_gen(),
+    )
 
 
 def test_openai_stream_restores_placeholders() -> None:
@@ -322,15 +333,24 @@ def test_openai_stream_restores_placeholders() -> None:
     assert b"alice@example.org" in raw
 
 
-async def _fake_sse_stream_split_placeholder(*_a: Any, **_k: Any):
+async def _fake_sse_stream_split_placeholder(*_a: Any, **_k: Any) -> StreamResult:
     """Upstream sends the redacted placeholder split across two SSE deltas."""
     ph = f"{PREFIX}EMAIL_1{SUFFIX}"
     mid = max(1, len(ph) // 2)
     ev1 = {"choices": [{"delta": {"content": f"notified {ph[:mid]}"}}]}
     ev2 = {"choices": [{"delta": {"content": f"{ph[mid:]} today."}}]}
-    yield f"data: {json.dumps(ev1)}\n\n".encode()
-    yield f"data: {json.dumps(ev2)}\n\n".encode()
-    yield b"data: [DONE]\n\n"
+
+    async def _gen() -> AsyncIterator[bytes]:
+        yield f"data: {json.dumps(ev1)}\n\n".encode()
+        yield f"data: {json.dumps(ev2)}\n\n".encode()
+        yield b"data: [DONE]\n\n"
+
+    return StreamResult(
+        status_code=200,
+        content_type="text/event-stream",
+        headers={},
+        iterator=_gen(),
+    )
 
 
 def test_openai_stream_splits_placeholder_across_chunks() -> None:

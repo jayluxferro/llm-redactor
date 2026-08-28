@@ -32,7 +32,9 @@ from ..redact.raw_surgery import (
 )
 from ..redact.restore import restore
 from ..transport.cloud import (
+    StreamResult,
     forward_anthropic_messages,
+    forward_anthropic_messages_stream,
     forward_anthropic_raw,
     forward_anthropic_raw_stream,
     forward_chat_completion_stream,
@@ -123,11 +125,64 @@ def _get_image_redactor() -> OnnxImageRedactor:
     return _image_redactor
 
 
+# Gate 1 helper: never label a non-SSE upstream as SSE, and pass through error
+# statuses with a faithful plain response.  Keep retry-after.
+_HOP_BY_HOP = frozenset(
+    {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+        "content-encoding",
+        "content-length",
+    }
+)
+
+
+def _plain_upstream_response(result: StreamResult) -> Response:
+    """Build a plain Response from an upstream preflight that was not SSE."""
+    out_headers = {k: v for k, v in result.headers.items() if k.lower() not in _HOP_BY_HOP}
+    return Response(
+        content=result.body or b"",
+        status_code=result.status_code,
+        headers=out_headers,
+    )
+
+
+async def _gate_2_openai(iterator: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    """Gate 2: emit a terminal error frame + [DONE] on mid-stream failure."""
+    try:
+        async for chunk in iterator:
+            yield chunk
+    except Exception as e:
+        # Leading \n\n self-frames the terminal event: if the upstream died
+        # mid-frame, the partial line is terminated and its block dispatched
+        # first; after a complete frame the extra blank lines are no-ops.
+        err = json.dumps({"error": {"type": type(e).__name__, "message": str(e)}})
+        yield f"\n\ndata: {err}\n\n".encode()
+        yield b"data: [DONE]\n\n"
+
+
+async def _gate_2_anthropic(iterator: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    """Gate 2: emit a single terminal `event: error` frame then close."""
+    try:
+        async for chunk in iterator:
+            yield chunk
+    except Exception as e:
+        # See _gate_2_openai for why the frame carries a leading \n\n.
+        err = json.dumps({"error": {"type": type(e).__name__, "message": str(e)}})
+        yield f"\n\nevent: error\ndata: {err}\n\n".encode()
+
+
 # --------------- OpenAI-compatible endpoints ---------------
 
 
 @app.post("/v1/chat/completions", response_model=None)
-async def chat_completions(request: Request) -> JSONResponse | StreamingResponse:
+async def chat_completions(request: Request) -> JSONResponse | Response | StreamingResponse:
     """OpenAI-compatible chat completion endpoint with redaction.
 
     Supports both ``stream: false`` (default) and ``stream: true``.
@@ -137,8 +192,18 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
     config = _get_config()
 
     # Forward all headers from the incoming request (minus hop-by-hop).
+    # accept-encoding is capability-bound: this proxy consumes upstream bytes
+    # before re-serving, so it must not advertise encodings its own httpx
+    # cannot decode (br/zstd) — httpx re-adds its own capability set on send.
     _skip = frozenset(
-        {"host", "transfer-encoding", "connection", "content-length", "content-encoding"}
+        {
+            "host",
+            "transfer-encoding",
+            "connection",
+            "content-length",
+            "content-encoding",
+            "accept-encoding",
+        }
     )
     upstream_headers = {k: v for k, v in request.headers.items() if k.lower() not in _skip}
 
@@ -226,7 +291,7 @@ async def _handle_openai_stream(
     upstream_headers: dict[str, str] | None = None,
     *,
     strict: bool = False,
-) -> StreamingResponse | JSONResponse:
+) -> Response | StreamingResponse:
     """Redact the request, stream from cloud, restore placeholders in deltas."""
     messages = body.get("messages", [])
     (
@@ -263,6 +328,15 @@ async def _handle_openai_stream(
     outgoing["messages"] = outgoing_messages
     outgoing.pop("extra_body", None)
 
+    # Gate 1: open upstream stream and inspect headers before committing to SSE.
+    upstream = await forward_chat_completion_stream(
+        outgoing,
+        config.cloud_target,
+        upstream_headers=upstream_headers,
+    )
+    if upstream.iterator is None:
+        return _plain_upstream_response(upstream)
+
     async def generate() -> AsyncIterator[bytes]:
         # Accumulate redacted (upstream) assistant text so placeholders split across
         # SSE chunks still restore. Emit only the *new* restored suffix per delta.
@@ -274,11 +348,7 @@ async def _handle_openai_stream(
         prev_emit_restored = ""
         last_choice_index: int | None = None
 
-        async for chunk in forward_chat_completion_stream(
-            outgoing,
-            config.cloud_target,
-            upstream_headers=upstream_headers,
-        ):
+        async for chunk in upstream.iterator:
             # Parse SSE lines, restore placeholders in content deltas.
             for line in chunk.decode("utf-8", errors="replace").splitlines():
                 if not line.startswith("data: "):
@@ -313,7 +383,7 @@ async def _handle_openai_stream(
                     yield (line + "\n").encode()
 
     return StreamingResponse(
-        generate(),
+        _gate_2_openai(generate()),
         media_type="text/event-stream",
         headers={"X-LLM-Redactor-Mode": "redacted"},
     )
@@ -323,7 +393,7 @@ async def _forward_openai_transparent(
     body: dict[str, Any],
     config: Config,
     headers: dict[str, str],
-) -> StreamingResponse | JSONResponse:
+) -> StreamingResponse | JSONResponse | Response:
     """Transparent proxy for OpenAI tool requests — bypass redaction pipeline."""
     from ..transport.cloud import (
         forward_chat_completion,
@@ -337,17 +407,17 @@ async def _forward_openai_transparent(
 
     is_stream = body.get("stream", False)
     if is_stream:
-
-        async def generate() -> AsyncIterator[bytes]:
-            async for chunk in forward_chat_completion_stream(
-                body,
-                config.cloud_target,
-                upstream_headers=headers,
-            ):
-                yield chunk
+        # Gate 1: open upstream before committing to SSE.
+        upstream = await forward_chat_completion_stream(
+            body,
+            config.cloud_target,
+            upstream_headers=headers,
+        )
+        if upstream.iterator is None:
+            return _plain_upstream_response(upstream)
 
         return StreamingResponse(
-            generate(),
+            _gate_2_openai(upstream.iterator),
             media_type="text/event-stream",
             headers=bypass_headers,
         )
@@ -393,26 +463,17 @@ async def _handle_anthropic_stream(
     upstream_headers: dict[str, str],
     combined_reverse_map: dict[str, str],
     all_detections: list[Span],
-) -> StreamingResponse:
+) -> StreamingResponse | Response:
     """Stream Anthropic SSE chunks from upstream with placeholder restoration."""
-    from .cloud import forward_anthropic_messages_stream
-
-    async def generate() -> AsyncIterator[bytes]:
-        try:
-            async for chunk in forward_anthropic_messages_stream(
-                outgoing, config.cloud_target, upstream_headers=upstream_headers
-            ):
-                yield chunk
-        except httpx.HTTPStatusError as e:
-            # Stream failed after headers — emit error as SSE
-            err = json.dumps({"error": {"type": "upstream_error", "message": str(e)}})
-            yield f"event: error\ndata: {err}\n\n".encode()
-        except Exception as e:
-            err = json.dumps({"error": {"type": "proxy_error", "message": str(e)}})
-            yield f"event: error\ndata: {err}\n\n".encode()
+    # Gate 1: open upstream stream and inspect headers before committing to SSE.
+    upstream = await forward_anthropic_messages_stream(
+        outgoing, config.cloud_target, upstream_headers=upstream_headers
+    )
+    if upstream.iterator is None:
+        return _plain_upstream_response(upstream)
 
     return StreamingResponse(
-        generate(),
+        _gate_2_anthropic(upstream.iterator),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -481,21 +542,22 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
             if body.get("stream"):
                 restorer = SSETextRestorer(surgical.reverse_map)
 
+                # Gate 1: open upstream before committing to SSE.
+                upstream = await forward_anthropic_raw_stream(
+                    surgical.new_raw,
+                    config.cloud_target,
+                    upstream_headers=raw_passthrough_headers,
+                )
+                if upstream.iterator is None:
+                    return _plain_upstream_response(upstream)
+
                 async def stream_surgical() -> AsyncIterator[bytes]:
-                    try:
-                        async for chunk in forward_anthropic_raw_stream(
-                            surgical.new_raw,
-                            config.cloud_target,
-                            upstream_headers=raw_passthrough_headers,
-                        ):
-                            yield restorer.feed_chunk(chunk)
-                        yield restorer.flush()
-                    except httpx.TimeoutException as e:
-                        err = json.dumps({"error": {"type": "upstream_timeout", "message": str(e)}})
-                        yield f"event: error\ndata: {err}\n\n".encode()
+                    async for chunk in upstream.iterator:
+                        yield restorer.feed_chunk(chunk)
+                    yield restorer.flush()
 
                 return StreamingResponse(
-                    stream_surgical(),
+                    _gate_2_anthropic(stream_surgical()),
                     media_type="text/event-stream",
                     headers={
                         "Cache-Control": "no-cache",
@@ -532,19 +594,15 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
             "proxy_anthropic_signed_passthrough", message_count=len(body.get("messages") or [])
         )
         if body.get("stream"):
-
-            async def stream_raw():
-                try:
-                    async for chunk in forward_anthropic_raw_stream(
-                        raw_body, config.cloud_target, upstream_headers=raw_passthrough_headers
-                    ):
-                        yield chunk
-                except httpx.TimeoutException as e:
-                    err = json.dumps({"error": {"type": "upstream_timeout", "message": str(e)}})
-                    yield f"event: error\ndata: {err}\n\n".encode()
+            # Gate 1: open upstream before committing to SSE.
+            upstream = await forward_anthropic_raw_stream(
+                raw_body, config.cloud_target, upstream_headers=raw_passthrough_headers
+            )
+            if upstream.iterator is None:
+                return _plain_upstream_response(upstream)
 
             return StreamingResponse(
-                stream_raw(),
+                _gate_2_anthropic(upstream.iterator),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
@@ -629,7 +687,14 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
 
     # Forward all headers from the incoming request (minus hop-by-hop).
     _skip = frozenset(
-        {"host", "transfer-encoding", "connection", "content-length", "content-encoding"}
+        {
+            "host",
+            "transfer-encoding",
+            "connection",
+            "content-length",
+            "content-encoding",
+            "accept-encoding",
+        }
     )
     upstream_headers = {k: v for k, v in request.headers.items() if k.lower() not in _skip}
 
