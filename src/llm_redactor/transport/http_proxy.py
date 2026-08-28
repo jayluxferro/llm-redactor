@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import secrets
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -125,6 +127,9 @@ def _get_image_redactor() -> OnnxImageRedactor:
     return _image_redactor
 
 
+logger = logging.getLogger(__name__)
+
+
 # Gate 1 helper: never label a non-SSE upstream as SSE, and pass through error
 # statuses with a faithful plain response.  Keep retry-after.
 _HOP_BY_HOP = frozenset(
@@ -155,26 +160,51 @@ def _plain_upstream_response(result: StreamResult) -> Response:
 
 async def _gate_2_openai(iterator: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
     """Gate 2: emit a terminal error frame + [DONE] on mid-stream failure."""
+    t0 = time.monotonic()
+    nbytes = 0
     try:
         async for chunk in iterator:
+            nbytes += len(chunk)
             yield chunk
     except Exception as e:
+        # An abrupt upstream close surfaces as httpx.ReadError wrapping
+        # anyio.EndOfStream — str(e) is EMPTY, so always prefix the
+        # exception type; without it both this log line and the
+        # client-visible terminal frame carry no information.
+        detail = f"{type(e).__name__}: {e}".rstrip(": ")
+        logger.warning(
+            "llm-redactor: mid-stream failure after %.1fs / %dB: %s",
+            time.monotonic() - t0,
+            nbytes,
+            detail,
+        )
         # Leading \n\n self-frames the terminal event: if the upstream died
         # mid-frame, the partial line is terminated and its block dispatched
         # first; after a complete frame the extra blank lines are no-ops.
-        err = json.dumps({"error": {"type": type(e).__name__, "message": str(e)}})
+        err = json.dumps({"error": {"type": type(e).__name__, "message": detail}})
         yield f"\n\ndata: {err}\n\n".encode()
         yield b"data: [DONE]\n\n"
 
 
 async def _gate_2_anthropic(iterator: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
     """Gate 2: emit a single terminal `event: error` frame then close."""
+    t0 = time.monotonic()
+    nbytes = 0
     try:
         async for chunk in iterator:
+            nbytes += len(chunk)
             yield chunk
     except Exception as e:
-        # See _gate_2_openai for why the frame carries a leading \n\n.
-        err = json.dumps({"error": {"type": type(e).__name__, "message": str(e)}})
+        # See _gate_2_openai for why the frame carries a leading \n\n
+        # and why the exception type must be preserved in detail.
+        detail = f"{type(e).__name__}: {e}".rstrip(": ")
+        logger.warning(
+            "llm-redactor: mid-stream failure after %.1fs / %dB: %s",
+            time.monotonic() - t0,
+            nbytes,
+            detail,
+        )
+        err = json.dumps({"error": {"type": type(e).__name__, "message": detail}})
         yield f"\n\nevent: error\ndata: {err}\n\n".encode()
 
 

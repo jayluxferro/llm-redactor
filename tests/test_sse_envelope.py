@@ -10,6 +10,7 @@ All upstreams are mocked; no network traffic leaves the test process.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import patch
@@ -32,13 +33,17 @@ def _client(endpoint: str = "http://test-cloud.invalid/v1") -> TestClient:
     return TestClient(app)
 
 
-def _terminal_error_openai() -> bytes:
-    err = json.dumps({"error": {"type": "RemoteProtocolError", "message": "peer closed"}})
+def _terminal_error_openai(
+    exc_type: str = "RemoteProtocolError", message: str = "RemoteProtocolError: peer closed"
+) -> bytes:
+    err = json.dumps({"error": {"type": exc_type, "message": message}})
     return f"data: {err}\n\n".encode() + b"data: [DONE]\n\n"
 
 
-def _terminal_error_anthropic() -> bytes:
-    err = json.dumps({"error": {"type": "RemoteProtocolError", "message": "peer closed"}})
+def _terminal_error_anthropic(
+    exc_type: str = "RemoteProtocolError", message: str = "RemoteProtocolError: peer closed"
+) -> bytes:
+    err = json.dumps({"error": {"type": exc_type, "message": message}})
     return f"event: error\ndata: {err}\n\n".encode()
 
 
@@ -200,9 +205,53 @@ def test_openai_stream_midstream_reset() -> None:
     assert b"data: [DONE]\n\n" in body
 
 
-# -----------------------------------------------------------------------------
-# Anthropic /v1/messages
-# -----------------------------------------------------------------------------
+async def _empty_broken_openai_stream(*_a: Any, **_k: Any) -> StreamResult:
+    """Send one complete frame then raise an empty-message transport error."""
+
+    async def _gen() -> AsyncIterator[bytes]:
+        yield b'data: {"choices":[{"delta":{"content":"ok "}}]}\n\n'
+        raise httpx.ReadError("")
+
+    return StreamResult(
+        status_code=200,
+        content_type="text/event-stream",
+        headers={},
+        iterator=_gen(),
+    )
+
+
+def test_openai_stream_midstream_empty_str_exception_is_typed_in_frame_and_log(
+    caplog: Any,
+) -> None:
+    """Regression: an abrupt upstream close surfaces as httpx.ReadError whose
+    str() is EMPTY.  The warning and the terminal frame must still name the
+    exception type — a bare empty message made this failure mode invisible.
+    """
+    c = _client()
+    with patch(
+        "llm_redactor.transport.http_proxy.forward_chat_completion_stream",
+        new=_empty_broken_openai_stream,
+    ):
+        with caplog.at_level(logging.WARNING, logger="llm_redactor.transport.http_proxy"):
+            with c.stream(
+                "POST",
+                "/v1/chat/completions",
+                json={
+                    "model": "gpt-4o-mini",
+                    "stream": True,
+                    "messages": [{"role": "user", "content": "Hello"}],
+                },
+            ) as resp:
+                assert resp.status_code == 200
+                assert "text/event-stream" in resp.headers["content-type"]
+                body = b"".join(resp.iter_bytes())
+
+    assert b'"content": "ok "' in body
+    assert b'"message": "ReadError"' in body
+    assert any(
+        "mid-stream failure" in r.getMessage() and "ReadError" in r.getMessage()
+        for r in caplog.records
+    )
 
 
 def test_anthropic_stream_401_propagation(httpx_mock: Any) -> None:
@@ -333,6 +382,58 @@ def test_anthropic_stream_midstream_reset() -> None:
     assert b'data: {"type":"content_block_delta"' in body
     assert body.rstrip().endswith(_terminal_error_anthropic().rstrip())
     assert b"event: error\ndata:" in body
+
+
+async def _empty_broken_anthropic_stream(*_a: Any, **_k: Any) -> StreamResult:
+    """Send one complete frame then raise an empty-message transport error."""
+
+    async def _gen() -> AsyncIterator[bytes]:
+        yield (
+            b'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}\n\n'
+        )
+        raise httpx.ReadError("")
+
+    return StreamResult(
+        status_code=200,
+        content_type="text/event-stream",
+        headers={},
+        iterator=_gen(),
+    )
+
+
+def test_anthropic_stream_midstream_empty_str_exception_is_typed_in_frame_and_log(
+    caplog: Any,
+) -> None:
+    """Regression: an abrupt upstream close surfaces as httpx.ReadError whose
+    str() is EMPTY.  The warning and the terminal frame must still name the
+    exception type — a bare empty message made this failure mode invisible.
+    """
+    c = _client()
+    with patch(
+        "llm_redactor.transport.http_proxy.forward_anthropic_messages_stream",
+        new=_empty_broken_anthropic_stream,
+    ):
+        with caplog.at_level(logging.WARNING, logger="llm_redactor.transport.http_proxy"):
+            with c.stream(
+                "POST",
+                "/v1/messages",
+                json={
+                    "model": "claude-3-5-sonnet",
+                    "stream": True,
+                    "max_tokens": 10,
+                    "messages": [{"role": "user", "content": "Hello"}],
+                },
+            ) as resp:
+                assert resp.status_code == 200
+                assert "text/event-stream" in resp.headers["content-type"]
+                body = b"".join(resp.iter_bytes())
+
+    assert b'data: {"type":"content_block_delta"' in body
+    assert b'"message": "ReadError"' in body
+    assert any(
+        "mid-stream failure" in r.getMessage() and "ReadError" in r.getMessage()
+        for r in caplog.records
+    )
 
 
 def test_accept_encoding_clamped_to_local_capability(httpx_mock: Any) -> None:
