@@ -336,6 +336,9 @@ async def _handle_openai_stream(
     )
     if upstream.iterator is None:
         return _plain_upstream_response(upstream)
+    # Bind the narrowed iterator to a local: mypy discards attribute narrowing
+    # inside closures, and the async generators below close over it.
+    iterator = upstream.iterator
 
     async def generate() -> AsyncIterator[bytes]:
         # Accumulate redacted (upstream) assistant text so placeholders split across
@@ -348,7 +351,7 @@ async def _handle_openai_stream(
         prev_emit_restored = ""
         last_choice_index: int | None = None
 
-        async for chunk in upstream.iterator:
+        async for chunk in iterator:
             # Parse SSE lines, restore placeholders in content deltas.
             for line in chunk.decode("utf-8", errors="replace").splitlines():
                 if not line.startswith("data: "):
@@ -550,9 +553,11 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
                 )
                 if upstream.iterator is None:
                     return _plain_upstream_response(upstream)
+                # Same closure-narrowing dance as the chat path above.
+                iterator = upstream.iterator
 
                 async def stream_surgical() -> AsyncIterator[bytes]:
-                    async for chunk in upstream.iterator:
+                    async for chunk in iterator:
                         yield restorer.feed_chunk(chunk)
                     yield restorer.flush()
 
