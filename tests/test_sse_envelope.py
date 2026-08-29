@@ -456,3 +456,116 @@ def test_accept_encoding_clamped_to_local_capability(httpx_mock: Any) -> None:
     assert sent is not None
     assert "br" not in sent.headers.get("accept-encoding", "")
     assert "zstd" not in sent.headers.get("accept-encoding", "")
+
+
+# ---------------------------------------------------------------------------
+# Connect-path failure (empty-str sibling of Gate 2)
+# ---------------------------------------------------------------------------
+
+
+async def _raise_read_timeout(*_a: Any, **_k: Any) -> Any:
+    raise httpx.ReadTimeout("")  # str() is EMPTY
+
+
+async def _raise_read_error(*_a: Any, **_k: Any) -> Any:
+    raise httpx.ReadError("")  # str() is EMPTY (wraps anyio.EndOfStream)
+
+
+async def _raise_connect_timeout(*_a: Any, **_k: Any) -> Any:
+    raise httpx.ConnectTimeout("")  # str() is EMPTY
+
+
+async def _raise_connect_error(*_a: Any, **_k: Any) -> Any:
+    raise httpx.ConnectError("")  # str() can be EMPTY
+
+
+def test_anthropic_nonstream_empty_str_timeout_is_typed(caplog: Any) -> None:
+    """Regression: httpx timeouts have an EMPTY str() — the 504 message and
+    the warning log must still name WHICH timeout fired; '"message": ""'
+    carried no information."""
+    c = _client()
+    with patch(
+        "llm_redactor.transport.http_proxy.forward_anthropic_messages",
+        new=_raise_read_timeout,
+    ):
+        with caplog.at_level(logging.WARNING, logger="llm_redactor.transport.http_proxy"):
+            resp = c.post(
+                "/v1/messages",
+                json={
+                    "model": "claude-3-5-sonnet",
+                    "stream": False,
+                    "max_tokens": 10,
+                    "messages": [{"role": "user", "content": "Hello"}],
+                },
+            )
+    assert resp.status_code == 504
+    assert resp.json()["error"]["message"] == "ReadTimeout"
+    assert any("ReadTimeout" in r.getMessage() for r in caplog.records)
+
+
+def test_anthropic_nonstream_empty_str_transport_error_is_typed(caplog: Any) -> None:
+    """Regression: the catch-all 502 embedded str(e) verbatim — EMPTY for
+    ReadError wrapping anyio.EndOfStream.  Body and log must name the type."""
+    c = _client()
+    with patch(
+        "llm_redactor.transport.http_proxy.forward_anthropic_messages",
+        new=_raise_read_error,
+    ):
+        with caplog.at_level(logging.WARNING, logger="llm_redactor.transport.http_proxy"):
+            resp = c.post(
+                "/v1/messages",
+                json={
+                    "model": "claude-3-5-sonnet",
+                    "stream": False,
+                    "max_tokens": 10,
+                    "messages": [{"role": "user", "content": "Hello"}],
+                },
+            )
+    assert resp.status_code == 502
+    assert resp.json()["error"]["message"] == "ReadError"
+    assert any("ReadError" in r.getMessage() for r in caplog.records)
+
+
+_SIGNED_BODY: dict[str, Any] = {
+    "model": "claude-sonnet",
+    "max_tokens": 100,
+    "stream": False,
+    "messages": [
+        {"role": "user", "content": "start"},
+        {
+            "role": "assistant",
+            "content": [{"type": "thinking", "thinking": "step one", "signature": "sig-abc-123"}],
+        },
+        {"role": "user", "content": "continue"},
+    ],
+}
+
+
+def test_anthropic_signed_nonstream_empty_str_timeout_is_typed(caplog: Any) -> None:
+    """Same regression on the signed raw path (forward_anthropic_raw)."""
+    c = _client()
+    with patch(
+        "llm_redactor.transport.http_proxy.forward_anthropic_raw",
+        new=_raise_connect_timeout,
+    ):
+        with caplog.at_level(logging.WARNING, logger="llm_redactor.transport.http_proxy"):
+            resp = c.post("/v1/messages", json=_SIGNED_BODY)
+    assert resp.status_code == 504
+    assert resp.json()["error"]["message"] == "ConnectTimeout"
+    assert any("ConnectTimeout" in r.getMessage() for r in caplog.records)
+
+
+def test_anthropic_signed_stream_empty_str_connect_error_is_typed(caplog: Any) -> None:
+    """Same regression on the signed streaming path (forward_anthropic_raw_stream)
+    — previously UNGUARDED, so a transport failure became a bare 500."""
+    c = _client()
+    body = {**_SIGNED_BODY, "stream": True}
+    with patch(
+        "llm_redactor.transport.http_proxy.forward_anthropic_raw_stream",
+        new=_raise_connect_error,
+    ):
+        with caplog.at_level(logging.WARNING, logger="llm_redactor.transport.http_proxy"):
+            resp = c.post("/v1/messages", json=body)
+    assert resp.status_code == 502
+    assert resp.json()["error"]["message"] == "ConnectError"
+    assert any("ConnectError" in r.getMessage() for r in caplog.records)

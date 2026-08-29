@@ -158,6 +158,29 @@ def _plain_upstream_response(result: StreamResult) -> Response:
     )
 
 
+def _upstream_transport_error(exc: Exception, target: object) -> JSONResponse:
+    """Map an upstream transport failure to a typed 504/502 + WARNING log.
+
+    httpx timeouts and ReadError wrapping anyio.EndOfStream have an EMPTY
+    str() — always prefix the exception type, otherwise the client gets a
+    blank message and the logs stay silent (connect-path sibling of the
+    Gate 2 empty-str bug class).  504 for timeouts, 502 for everything
+    else, matching the rest of the manifold chain.
+    """
+    detail = f"{type(exc).__name__}: {exc}".rstrip(": ")
+    status = 504 if isinstance(exc, httpx.TimeoutException) else 502
+    etype = "upstream_timeout" if status == 504 else "upstream_error"
+    logger.warning(
+        "llm-redactor: upstream request to %s failed: %s",
+        getattr(target, "endpoint", "?"),
+        detail,
+    )
+    return JSONResponse(
+        status_code=status,
+        content={"error": {"type": etype, "message": detail}},
+    )
+
+
 async def _gate_2_openai(iterator: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
     """Gate 2: emit a terminal error frame + [DONE] on mid-stream failure."""
     t0 = time.monotonic()
@@ -576,11 +599,14 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
                 restorer = SSETextRestorer(surgical.reverse_map)
 
                 # Gate 1: open upstream before committing to SSE.
-                upstream = await forward_anthropic_raw_stream(
-                    surgical.new_raw,
-                    config.cloud_target,
-                    upstream_headers=raw_passthrough_headers,
-                )
+                try:
+                    upstream = await forward_anthropic_raw_stream(
+                        surgical.new_raw,
+                        config.cloud_target,
+                        upstream_headers=raw_passthrough_headers,
+                    )
+                except httpx.HTTPError as e:
+                    return _upstream_transport_error(e, config.cloud_target)
                 if upstream.iterator is None:
                     return _plain_upstream_response(upstream)
                 # Same closure-narrowing dance as the chat path above.
@@ -607,11 +633,8 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
                     config.cloud_target,
                     upstream_headers=raw_passthrough_headers,
                 )
-            except httpx.TimeoutException as e:
-                return JSONResponse(
-                    status_code=504,
-                    content={"error": {"type": "upstream_timeout", "message": str(e)}},
-                )
+            except httpx.HTTPError as e:
+                return _upstream_transport_error(e, config.cloud_target)
             out_headers = {
                 k: v
                 for k, v in resp_headers.items()
@@ -630,9 +653,12 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
         )
         if body.get("stream"):
             # Gate 1: open upstream before committing to SSE.
-            upstream = await forward_anthropic_raw_stream(
-                raw_body, config.cloud_target, upstream_headers=raw_passthrough_headers
-            )
+            try:
+                upstream = await forward_anthropic_raw_stream(
+                    raw_body, config.cloud_target, upstream_headers=raw_passthrough_headers
+                )
+            except httpx.HTTPError as e:
+                return _upstream_transport_error(e, config.cloud_target)
             if upstream.iterator is None:
                 return _plain_upstream_response(upstream)
 
@@ -646,9 +672,12 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
                 },
             )
 
-        resp_bytes, status, resp_headers = await forward_anthropic_raw(
-            raw_body, config.cloud_target, upstream_headers=raw_passthrough_headers
-        )
+        try:
+            resp_bytes, status, resp_headers = await forward_anthropic_raw(
+                raw_body, config.cloud_target, upstream_headers=raw_passthrough_headers
+            )
+        except httpx.HTTPError as e:
+            return _upstream_transport_error(e, config.cloud_target)
         out_headers = {
             k: v
             for k, v in resp_headers.items()
@@ -767,13 +796,10 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
             content=err_body,
             headers=resp_headers,
         )
-    except httpx.TimeoutException as e:
-        return JSONResponse(
-            status_code=504,
-            content={"error": {"type": "upstream_timeout", "message": str(e)}},
-        )
     except Exception as e:
-        return JSONResponse(status_code=502, content={"error": str(e)})
+        # Transport failures land here (HTTPStatusError is handled above).
+        # httpx exceptions often have an EMPTY str() — the helper types them.
+        return _upstream_transport_error(e, config.cloud_target)
 
     # Validate the upstream response has the expected Anthropic shape.
     # An empty or malformed response (e.g. wrong endpoint URL) would
