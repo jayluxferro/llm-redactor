@@ -51,7 +51,7 @@ async def validate_spans(
     *,
     endpoint: str = "http://127.0.0.1:11434",
     model: str = "llama3.2:3b",
-    timeout: float = 30.0,
+    timeout: httpx.Timeout | float = httpx.Timeout(connect=2.0, read=20.0, write=5.0, pool=5.0),
 ) -> list[Span]:
     """Validate detected spans using a local LLM.
 
@@ -106,7 +106,7 @@ async def _batch_validate(
     *,
     endpoint: str,
     model: str,
-    timeout: float,
+    timeout: httpx.Timeout | float,
 ) -> list[Span]:
     """Validate a batch of spans in a single LLM call."""
     # Build the prompt with all spans and their context.
