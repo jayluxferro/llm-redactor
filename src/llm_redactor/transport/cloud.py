@@ -65,6 +65,7 @@ async def forward_chat_completion(
 
     client_ua = headers.pop("user-agent", None)
     async with httpx.AsyncClient(
+        limits=httpx.Limits(keepalive_expiry=2.0),
         timeout=timeout,
         headers={"user-agent": client_ua} if client_ua else {},
     ) as client:
@@ -163,6 +164,7 @@ async def forward_chat_completion_stream(
     if upstream_headers:
         client_ua = upstream_headers.get("user-agent", "")
     client = httpx.AsyncClient(
+        limits=httpx.Limits(keepalive_expiry=2.0),
         timeout=timeout,
         headers={"user-agent": client_ua} if client_ua else {},
     )
@@ -211,6 +213,7 @@ async def forward_anthropic_messages(
     # Pass original user-agent on the client so httpx never injects its own
     client_ua = headers.pop("user-agent", None)
     async with httpx.AsyncClient(
+        limits=httpx.Limits(keepalive_expiry=2.0),
         timeout=timeout,
         headers={"user-agent": client_ua} if client_ua else {},
     ) as client:
@@ -246,6 +249,7 @@ async def forward_anthropic_raw(
 
     client_ua = headers.pop("user-agent", None)
     async with httpx.AsyncClient(
+        limits=httpx.Limits(keepalive_expiry=2.0),
         timeout=timeout,
         headers={"user-agent": client_ua} if client_ua else {},
     ) as client:
@@ -265,6 +269,7 @@ async def forward_anthropic_raw_stream(
     if upstream_headers:
         client_ua = upstream_headers.get("user-agent", "")
     client = httpx.AsyncClient(
+        limits=httpx.Limits(keepalive_expiry=2.0),
         timeout=timeout,
         headers={"user-agent": client_ua} if client_ua else {},
     )
@@ -301,6 +306,7 @@ async def forward_anthropic_messages_stream(
     if upstream_headers:
         client_ua = upstream_headers.get("user-agent", "")
     client = httpx.AsyncClient(
+        limits=httpx.Limits(keepalive_expiry=2.0),
         timeout=timeout,
         headers={"user-agent": client_ua} if client_ua else {},
     )
