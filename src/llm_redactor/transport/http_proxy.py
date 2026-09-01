@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import secrets
 import time
 from collections.abc import AsyncIterator
@@ -34,6 +35,7 @@ from ..redact.raw_surgery import (
 )
 from ..redact.restore import restore
 from ..transport.cloud import (
+    DEFAULT_UPSTREAM_TIMEOUT,
     StreamResult,
     forward_anthropic_messages,
     forward_anthropic_messages_stream,
@@ -1031,3 +1033,54 @@ def _summarize_detections(detections: list) -> list[dict[str, Any]]:
     for d in detections:
         counts[d.kind] = counts.get(d.kind, 0) + 1
     return [{"kind": k, "count": v} for k, v in counts.items()]
+
+
+# --------------- Catch-all raw passthrough ---------------
+
+
+@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def raw_passthrough(request: Request, path: str) -> Response:
+    """Catch-all for endpoints without a dedicated route (count_tokens, models, …).
+
+    Registered LAST so every explicit route above wins.  Forwards the inbound
+    bytes RAW to the upstream — no redaction, no JSON round-trip — so payloads
+    Anthropic validates against the original encoding (signed thinking blocks,
+    count_tokens bodies) stay byte-identical.  Header recipe mirrors
+    ``forward_anthropic_raw`` (cloud.py): forwarded headers minus hop-by-hop,
+    then content-type + anthropic-version defaults, and the env API key only
+    when the client sent neither ``x-api-key`` nor ``authorization``.
+    """
+    config = _get_config()
+    raw = await request.body()
+
+    _skip_hop = frozenset(
+        {"host", "transfer-encoding", "connection", "content-length", "content-encoding"}
+    )
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in _skip_hop}
+    headers["content-type"] = "application/json"
+    if "anthropic-version" not in headers:
+        headers["anthropic-version"] = "2023-06-01"
+    api_key = os.environ.get(config.cloud_target.api_key_env, "")
+    if api_key and "x-api-key" not in headers and "authorization" not in headers:
+        headers["x-api-key"] = api_key
+
+    # cloud_target.endpoint already carries the API-version segment (e.g.
+    # ".../api.openai.com/v1") while FastAPI's {path:path} includes the
+    # leading "v1" — drop that segment so we never build ".../v1/v1/…".
+    parts = path.split("/")
+    if parts and parts[0] == "v1":
+        parts = parts[1:]
+    url = f"{config.cloud_target.endpoint.rstrip('/')}/{('/'.join(parts))}"
+    if request.url.query:
+        url = f"{url}?{request.url.query}"
+    try:
+        async with httpx.AsyncClient(
+            limits=httpx.Limits(keepalive_expiry=2.0),
+            timeout=DEFAULT_UPSTREAM_TIMEOUT,
+        ) as client:
+            resp = await client.request(request.method, url, content=raw, headers=headers)
+    except httpx.HTTPError as e:
+        return _upstream_transport_error(e, config.cloud_target)
+
+    out_headers = {k: v for k, v in resp.headers.items() if k.lower() not in _HOP_BY_HOP}
+    return Response(content=resp.content, status_code=resp.status_code, headers=out_headers)

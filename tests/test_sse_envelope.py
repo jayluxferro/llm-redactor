@@ -569,3 +569,52 @@ def test_anthropic_signed_stream_empty_str_connect_error_is_typed(caplog: Any) -
     assert resp.status_code == 502
     assert resp.json()["error"]["message"] == "ConnectError"
     assert any("ConnectError" in r.getMessage() for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Catch-all raw passthrough (count_tokens, models, ...)
+# ---------------------------------------------------------------------------
+
+
+def test_raw_passthrough_count_tokens(httpx_mock: Any) -> None:
+    """Catch-all: POST /v1/messages/count_tokens reaches the upstream
+    byte-identical, with auth preserved and path+query intact."""
+    httpx_mock.add_response(
+        url="http://test-cloud.invalid/v1/messages/count_tokens?beta=true",
+        status_code=200,
+        headers={"content-type": "application/json", "x-test": "yes"},
+        json={"input_tokens": 7},
+    )
+    c = _client()
+
+    raw = b'{"model":"claude-3-5-sonnet","messages":[{"role":"user","content":"hi"}]}'
+    resp = c.post(
+        "/v1/messages/count_tokens?beta=true",
+        content=raw,
+        headers={"content-type": "application/json", "x-api-key": "sk-test"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"input_tokens": 7}
+    assert resp.headers["x-test"] == "yes"
+    sent = httpx_mock.get_request()
+    assert sent is not None
+    assert sent.content == raw  # byte-identical — no JSON round-trip
+    assert sent.headers.get("x-api-key") == "sk-test"
+    assert str(sent.url).endswith("/v1/messages/count_tokens?beta=true")
+
+
+def test_raw_passthrough_upstream_error_is_typed(httpx_mock: Any, caplog: Any) -> None:
+    """Catch-all: a mocked ConnectError yields the typed 502, not a bare 500."""
+    httpx_mock.add_exception(httpx.ConnectError(""))  # str() is EMPTY
+    c = _client()
+    with caplog.at_level(logging.WARNING, logger="llm_redactor.transport.http_proxy"):
+        resp = c.post(
+            "/v1/messages/count_tokens",
+            content=b'{"model":"claude-3-5-sonnet","messages":[]}',
+            headers={"content-type": "application/json", "x-api-key": "sk-test"},
+        )
+    assert resp.status_code == 502
+    assert resp.json()["error"]["type"] == "upstream_error"
+    assert resp.json()["error"]["message"] == "ConnectError"
+    assert any("ConnectError" in r.getMessage() for r in caplog.records)
