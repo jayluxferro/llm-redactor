@@ -560,6 +560,17 @@ outputs under `evals/results_*`.
   placeholder (`⟨EMAIL_1·…⟩`), shrinking accidental model echo collisions.
 - **MCP session cap**: `transport.mcp_session_cap` / `LLM_REDACTOR_MCP_SESSION_CAP` bounds
   in-memory `redact.scrub` sessions; oldest entries are evicted under pressure.
+- **Concurrency and scaling**: `serve` runs multiple uvicorn workers so a single slow
+  request can never block the accept loop (the failure mode that surfaces as
+  `502 Upstream unreachable` under load). `--workers N` sets the process count — `0`,
+  the default, auto-scales to the CPU count capped at 8; `--limit-concurrency M`
+  (default 64) is a per-worker load-shedding valve that returns HTTP 503 once M requests
+  are in flight instead of letting the worker fall over. spaCy NER runs in a worker
+  thread so detection never stalls the event loop, and the proxy shares one bounded HTTP
+  connection pool per worker rather than opening a fresh client per request. Each worker
+  loads its own detector (spaCy, plus the ONNX image model when `image_redaction` is
+  enabled), so peak memory scales with worker count — size `--workers` against available
+  RAM when running several instances on one host.
 
 Example config: [`examples/operator-hardening.yaml`](examples/operator-hardening.yaml).
 
