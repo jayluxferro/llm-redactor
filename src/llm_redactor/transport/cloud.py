@@ -24,6 +24,56 @@ DEFAULT_UPSTREAM_TIMEOUT: httpx.Timeout = httpx.Timeout(
     pool=10.0,
 )
 
+# Bounded connection pool for the shared upstream client.
+#
+# Why a shared, bounded client (see get_client): the proxy used to open a
+# *fresh* AsyncClient for every request. Each one stood up its own pool, and
+# on a busy chain (client -> redactor -> veritas -> ollama -> cloud) a single
+# request can hold several upstream sockets at once. Under concurrent load that
+# unbounded churn exhausted the process file-descriptor budget (macOS defaults
+# to a 256 soft limit); once accept() started failing on EMFILE the gateway saw
+# :7789 itself as unreachable and reported "502 Upstream unreachable". A single
+# bounded pool per worker caps in-flight sockets and reuses warm connections
+# instead of re-paying TCP+TLS setup on every call.
+#
+# keepalive_expiry=2.0 retires idle pooled connections before the next hop's
+# uvicorn closes them at its own idle timeout — reusing a socket the peer has
+# already half-closed surfaces as a spurious upstream error mid-stream.
+DEFAULT_UPSTREAM_LIMITS: httpx.Limits = httpx.Limits(
+    max_connections=64,
+    max_keepalive_connections=32,
+    keepalive_expiry=2.0,
+)
+
+# Process-wide client. One per uvicorn worker: created on startup (lifespan) or
+# lazily on first use, closed on shutdown. Never closed per request — closing
+# the shared client would tear the pool out from under concurrent requests.
+_client: httpx.AsyncClient | None = None
+
+
+def get_client() -> httpx.AsyncClient:
+    """Return the process-wide upstream client, creating it on first use.
+
+    The client carries no default headers: per-request user-agent rides on the
+    request headers instead, so the pooled client stays stateless and safe to
+    share across concurrent requests.
+    """
+    global _client
+    if _client is None or _client.is_closed:
+        _client = httpx.AsyncClient(
+            limits=DEFAULT_UPSTREAM_LIMITS,
+            timeout=DEFAULT_UPSTREAM_TIMEOUT,
+        )
+    return _client
+
+
+async def aclose_client() -> None:
+    """Close the shared upstream client. Call on app shutdown (lifespan)."""
+    global _client
+    if _client is not None and not _client.is_closed:
+        await _client.aclose()
+    _client = None
+
 
 @dataclass
 class StreamResult:
@@ -63,25 +113,22 @@ async def forward_chat_completion(
     if api_key and "authorization" not in headers:
         headers["Authorization"] = f"Bearer {api_key}"
 
-    client_ua = headers.pop("user-agent", None)
-    async with httpx.AsyncClient(
-        limits=httpx.Limits(keepalive_expiry=2.0),
-        timeout=timeout,
-        headers={"user-agent": client_ua} if client_ua else {},
-    ) as client:
-        resp = await client.post(url, json=body, headers=headers)
-        resp.raise_for_status()
-        return _parse_json_response(resp, url)
+    # The caller's user-agent (if any) stays in the request headers so the
+    # shared client never has to hold per-request state; when absent, httpx
+    # supplies its own default, exactly as before.
+    resp = await get_client().post(url, json=body, headers=headers, timeout=timeout)
+    resp.raise_for_status()
+    return _parse_json_response(resp, url)
 
 
 def _parse_json_response(resp: httpx.Response, url: str) -> dict[str, Any]:
     """Parse JSON from an upstream response, with a clear error on failure."""
     try:
         return resp.json()
-    except Exception:
+    except ValueError:
         try:
             text = resp.text[:1024] if resp.text else "(empty body)"
-        except Exception:
+        except ValueError:
             text = f"(undecodable body, {len(resp.content)} bytes)"
         raise httpx.HTTPStatusError(
             message=f"Upstream returned non-JSON response: {text}",
@@ -95,6 +142,8 @@ def _build_openai_request(
     body: dict[str, Any],
     config: CloudTargetConfig,
     upstream_headers: dict[str, str] | None = None,
+    *,
+    timeout: httpx.Timeout = DEFAULT_UPSTREAM_TIMEOUT,
 ) -> httpx.Request:
     url = f"{config.endpoint.rstrip('/')}/chat/completions"
     headers: dict[str, str] = dict(upstream_headers) if upstream_headers else {}
@@ -102,7 +151,7 @@ def _build_openai_request(
     api_key = os.environ.get(config.api_key_env, "")
     if api_key and "authorization" not in headers:
         headers["Authorization"] = f"Bearer {api_key}"
-    return client.build_request("POST", url, json=body, headers=headers)
+    return client.build_request("POST", url, json=body, headers=headers, timeout=timeout)
 
 
 def _build_anthropic_request(
@@ -112,6 +161,7 @@ def _build_anthropic_request(
     json: dict[str, Any] | None = None,
     content: bytes | None = None,
     upstream_headers: dict[str, str] | None = None,
+    timeout: httpx.Timeout = DEFAULT_UPSTREAM_TIMEOUT,
 ) -> httpx.Request:
     url = f"{config.endpoint.rstrip('/')}/messages"
     headers: dict[str, str] = dict(upstream_headers) if upstream_headers else {}
@@ -122,19 +172,26 @@ def _build_anthropic_request(
     if api_key and "x-api-key" not in headers and "authorization" not in headers:
         headers["x-api-key"] = api_key
     if json is not None:
-        return client.build_request("POST", url, json=json, headers=headers)
-    return client.build_request("POST", url, content=content, headers=headers)
+        return client.build_request("POST", url, json=json, headers=headers, timeout=timeout)
+    return client.build_request("POST", url, content=content, headers=headers, timeout=timeout)
 
 
-async def _close_on_error(resp: httpx.Response, client: httpx.AsyncClient) -> bytes:
+async def _close_on_error(resp: httpx.Response) -> bytes:
+    """Drain and close a non-streamable upstream response, returning its body.
+
+    Only the response is closed — the shared client stays open for reuse.
+    """
     body = await resp.aread()
     await resp.aclose()
-    await client.aclose()
     return body
 
 
-def _stream_response(resp: httpx.Response, client: httpx.AsyncClient) -> AsyncIterator[bytes]:
-    """Yield raw upstream bytes and ensure response/client cleanup."""
+def _stream_response(resp: httpx.Response) -> AsyncIterator[bytes]:
+    """Yield raw upstream bytes and ensure the response is released to the pool.
+
+    Closing the response (not the client) returns its connection to the shared
+    pool for reuse.
+    """
 
     async def gen() -> AsyncIterator[bytes]:
         try:
@@ -142,7 +199,6 @@ def _stream_response(resp: httpx.Response, client: httpx.AsyncClient) -> AsyncIt
                 yield chunk
         finally:
             await resp.aclose()
-            await client.aclose()
 
     return gen()
 
@@ -160,19 +216,12 @@ async def forward_chat_completion_stream(
     response (for non-2xx or non-SSE upstreams) or an iterator of raw SSE
     chunks.  The caller commits to ``text/event-stream`` only after this check.
     """
-    client_ua = ""
-    if upstream_headers:
-        client_ua = upstream_headers.get("user-agent", "")
-    client = httpx.AsyncClient(
-        limits=httpx.Limits(keepalive_expiry=2.0),
-        timeout=timeout,
-        headers={"user-agent": client_ua} if client_ua else {},
-    )
-    req = _build_openai_request(client, body, config, upstream_headers)
+    client = get_client()
+    req = _build_openai_request(client, body, config, upstream_headers, timeout=timeout)
     resp = await client.send(req, stream=True)
     content_type = resp.headers.get("content-type")
     if resp.status_code >= 400 or "text/event-stream" not in (content_type or ""):
-        body_bytes = await _close_on_error(resp, client)
+        body_bytes = await _close_on_error(resp)
         return StreamResult(
             status_code=resp.status_code,
             content_type=content_type,
@@ -183,7 +232,7 @@ async def forward_chat_completion_stream(
         status_code=resp.status_code,
         content_type=content_type,
         headers=dict(resp.headers),
-        iterator=_stream_response(resp, client),
+        iterator=_stream_response(resp),
     )
 
 
@@ -202,7 +251,8 @@ async def forward_anthropic_messages(
     api_key = os.environ.get(config.api_key_env, "")
     url = f"{config.endpoint.rstrip('/')}/messages"
 
-    # Start with forwarded headers, then overlay service essentials.
+    # Start with forwarded headers, then overlay service essentials. The caller's
+    # user-agent (if any) is left in place and rides on the request.
     headers: dict[str, str] = dict(upstream_headers) if upstream_headers else {}
     headers["content-type"] = "application/json"
     if "anthropic-version" not in headers:
@@ -210,16 +260,9 @@ async def forward_anthropic_messages(
     if api_key and "x-api-key" not in headers and "authorization" not in headers:
         headers["x-api-key"] = api_key
 
-    # Pass original user-agent on the client so httpx never injects its own
-    client_ua = headers.pop("user-agent", None)
-    async with httpx.AsyncClient(
-        limits=httpx.Limits(keepalive_expiry=2.0),
-        timeout=timeout,
-        headers={"user-agent": client_ua} if client_ua else {},
-    ) as client:
-        resp = await client.post(url, json=body, headers=headers)
-        resp.raise_for_status()
-        return _parse_json_response(resp, url)
+    resp = await get_client().post(url, json=body, headers=headers, timeout=timeout)
+    resp.raise_for_status()
+    return _parse_json_response(resp, url)
 
 
 async def forward_anthropic_raw(
@@ -247,14 +290,8 @@ async def forward_anthropic_raw(
     if api_key and "x-api-key" not in headers and "authorization" not in headers:
         headers["x-api-key"] = api_key
 
-    client_ua = headers.pop("user-agent", None)
-    async with httpx.AsyncClient(
-        limits=httpx.Limits(keepalive_expiry=2.0),
-        timeout=timeout,
-        headers={"user-agent": client_ua} if client_ua else {},
-    ) as client:
-        resp = await client.post(url, content=body_bytes, headers=headers)
-        return resp.content, resp.status_code, dict(resp.headers)
+    resp = await get_client().post(url, content=body_bytes, headers=headers, timeout=timeout)
+    return resp.content, resp.status_code, dict(resp.headers)
 
 
 async def forward_anthropic_raw_stream(
@@ -265,21 +302,14 @@ async def forward_anthropic_raw_stream(
     upstream_headers: dict[str, str] | None = None,
 ) -> StreamResult:
     """Stream variant of :func:`forward_anthropic_raw` with Gate 1 preflight."""
-    client_ua = ""
-    if upstream_headers:
-        client_ua = upstream_headers.get("user-agent", "")
-    client = httpx.AsyncClient(
-        limits=httpx.Limits(keepalive_expiry=2.0),
-        timeout=timeout,
-        headers={"user-agent": client_ua} if client_ua else {},
-    )
+    client = get_client()
     req = _build_anthropic_request(
-        client, config, content=body_bytes, upstream_headers=upstream_headers
+        client, config, content=body_bytes, upstream_headers=upstream_headers, timeout=timeout
     )
     resp = await client.send(req, stream=True)
     content_type = resp.headers.get("content-type")
     if resp.status_code >= 400 or "text/event-stream" not in (content_type or ""):
-        body_bytes = await _close_on_error(resp, client)
+        body_bytes = await _close_on_error(resp)
         return StreamResult(
             status_code=resp.status_code,
             content_type=content_type,
@@ -290,7 +320,7 @@ async def forward_anthropic_raw_stream(
         status_code=resp.status_code,
         content_type=content_type,
         headers=dict(resp.headers),
-        iterator=_stream_response(resp, client),
+        iterator=_stream_response(resp),
     )
 
 
@@ -302,19 +332,14 @@ async def forward_anthropic_messages_stream(
     upstream_headers: dict[str, str] | None = None,
 ) -> StreamResult:
     """Forward a streaming Anthropic Messages request with Gate 1 preflight."""
-    client_ua = ""
-    if upstream_headers:
-        client_ua = upstream_headers.get("user-agent", "")
-    client = httpx.AsyncClient(
-        limits=httpx.Limits(keepalive_expiry=2.0),
-        timeout=timeout,
-        headers={"user-agent": client_ua} if client_ua else {},
+    client = get_client()
+    req = _build_anthropic_request(
+        client, config, json=body, upstream_headers=upstream_headers, timeout=timeout
     )
-    req = _build_anthropic_request(client, config, json=body, upstream_headers=upstream_headers)
     resp = await client.send(req, stream=True)
     content_type = resp.headers.get("content-type")
     if resp.status_code >= 400 or "text/event-stream" not in (content_type or ""):
-        body_bytes = await _close_on_error(resp, client)
+        body_bytes = await _close_on_error(resp)
         return StreamResult(
             status_code=resp.status_code,
             content_type=content_type,
@@ -325,5 +350,5 @@ async def forward_anthropic_messages_stream(
         status_code=resp.status_code,
         content_type=content_type,
         headers=dict(resp.headers),
-        iterator=_stream_response(resp, client),
+        iterator=_stream_response(resp),
     )

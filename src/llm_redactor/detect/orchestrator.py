@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+from typing import TYPE_CHECKING
 
 from .ner import detect_ner
 from .regex import detect_regex
 from .types import Span
+
+if TYPE_CHECKING:
+    from ..config import Config
 
 _LOG = logging.getLogger(__name__)
 
@@ -135,8 +140,29 @@ def configure_detection(
     )
 
 
-def detect_all(text: str, use_ner: bool = True) -> list[Span]:
-    """Run all enabled detectors and return merged spans."""
+def apply_detection_config(cfg: Config) -> None:
+    """Apply NER settings from a Config.
+
+    Single source of truth for wiring detection out of config — shared by the
+    CLI (in-process commands) and the HTTP proxy's per-worker lifespan, so the
+    config→detector mapping lives in exactly one place.
+    """
+    configure_detection(
+        ner_model=cfg.local_model.ner_model,
+        ner_confidence_floor=cfg.local_model.ner_confidence_floor,
+        ner_labels_to_ignore=cfg.local_model.ner_labels_to_ignore,
+    )
+
+
+def _detect_and_merge(text: str, use_ner: bool) -> list[Span]:
+    """Synchronous regex + NER detection and overlap merge.
+
+    This is the CPU-heavy, blocking part of detection (spaCy NER in particular).
+    It is factored out so async callers can push it onto a worker thread via
+    ``asyncio.to_thread`` — running it inline on the event loop would stall
+    uvicorn's ``accept()`` under concurrent load and make the proxy look
+    unreachable to the gateway.
+    """
     spans = detect_regex(text)
 
     if use_ner:
@@ -151,6 +177,11 @@ def detect_all(text: str, use_ner: bool = True) -> list[Span]:
         spans.extend(s for s in ner_spans if not _is_false_positive(s))
 
     return _merge_overlapping(spans)
+
+
+def detect_all(text: str, use_ner: bool = True) -> list[Span]:
+    """Run all enabled detectors and return merged spans (synchronous)."""
+    return _detect_and_merge(text, use_ner)
 
 
 async def detect_all_validated(
@@ -168,17 +199,9 @@ async def detect_all_validated(
     """
     from .llm_validator import validate_spans
 
-    spans = detect_regex(text)
-
-    if use_ner:
-        try:
-            ner_spans = detect_ner(text)
-        except Exception as exc:
-            _LOG.warning("NER unavailable; continuing with regex detection: %s", type(exc).__name__)
-            ner_spans = []
-        spans.extend(s for s in ner_spans if not _is_false_positive(s))
-
-    merged = _merge_overlapping(spans)
+    # Push the blocking regex+NER work onto a thread so the event loop stays
+    # free to accept new connections while spaCy runs.
+    merged = await asyncio.to_thread(_detect_and_merge, text, use_ner)
 
     # LLM validation pass — only validates NER spans (regex are auto-kept).
     try:

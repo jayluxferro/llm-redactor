@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import typer
@@ -18,13 +19,9 @@ console = Console()
 
 def _apply_detection_config(cfg: Config) -> None:
     """Apply detection settings from config (NER model, confidence floor)."""
-    from .detect.orchestrator import configure_detection
+    from .detect.orchestrator import apply_detection_config
 
-    configure_detection(
-        ner_model=cfg.local_model.ner_model,
-        ner_confidence_floor=cfg.local_model.ner_confidence_floor,
-        ner_labels_to_ignore=cfg.local_model.ner_labels_to_ignore,
-    )
+    apply_detection_config(cfg)
 
 
 @app.command()
@@ -33,26 +30,46 @@ def serve(
     host: str = typer.Option("127.0.0.1", "--host", help="HTTP bind host"),
     config_path: str = typer.Option("llm_redactor.yaml", "--config", help="Config file path"),
     upstream: str | None = typer.Option(None, "--upstream", help="Override the cloud upstream URL"),
+    workers: int = typer.Option(
+        0, "--workers", help="Worker processes (0 = auto: CPU count, capped at 8)"
+    ),
+    limit_concurrency: int = typer.Option(
+        64,
+        "--limit-concurrency",
+        help="Max concurrent requests per worker before shedding load (503)",
+    ),
 ) -> None:
     """Start the llm-redactor HTTP proxy."""
     import uvicorn
 
-    from .transport.http_proxy import configure
-
+    # Validate the config up front so a bad path fails here with a clear message
+    # rather than crashing every spawned worker. Detection/spaCy is NOT loaded
+    # in this parent process: with workers > 1 each worker is a fresh spawn, so
+    # every worker configures itself from the environment in its lifespan hook
+    # (module globals set here would not survive the spawn).
     cfg = load_config(Path(config_path))
-    cfg.transport.http_port = port
+    resolved_upstream = upstream or cfg.cloud_target.endpoint
+
+    # Hand the config to workers via the environment (inherited across spawn).
+    os.environ["LLM_REDACTOR_CONFIG"] = str(Path(config_path))
+    os.environ["LLM_REDACTOR_PORT"] = str(port)
     if upstream:
-        cfg.cloud_target.endpoint = upstream
+        os.environ["LLM_REDACTOR_UPSTREAM"] = upstream
         console.print(f"[dim]Upstream override: {upstream}[/dim]")
-    _apply_detection_config(cfg)
-    configure(cfg)
+
     configure_logging()
 
-    console.print(f"[bold]llm-redactor[/bold] proxy on {host}:{port}")
+    worker_count = max(1, workers or min(os.cpu_count() or 2, 8))
+    console.print(
+        f"[bold]llm-redactor[/bold] proxy on {host}:{port} "
+        f"(workers={worker_count}, upstream={resolved_upstream})"
+    )
     uvicorn.run(
         "llm_redactor.transport.http_proxy:app",
         host=host,
         port=port,
+        workers=worker_count,
+        limit_concurrency=limit_concurrency,
         log_level="info",
     )
 

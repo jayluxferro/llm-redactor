@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -102,7 +103,8 @@ class OptionBPipeline:
                 ollama_model=model,
             )
         else:
-            spans = detect_all(text, use_ner=self.use_ner)
+            # Offload blocking regex+NER off the event loop (see detect_all).
+            spans = await asyncio.to_thread(detect_all, text, self.use_ner)
 
         _cache_detect(text, spans)
         return filter_by_categories(spans, self.config.policy.categories)

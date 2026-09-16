@@ -14,16 +14,19 @@ import os
 import secrets
 import time
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from ..config import Config
+from ..config import Config, load_config
+from ..detect.orchestrator import apply_detection_config
 from ..detect.types import Span
 from ..image.redactor import ImageRedactionUnavailable, InvalidImage, OnnxImageRedactor
-from ..observability import log_event
+from ..observability import configure_logging, log_event
 from ..pipeline.option_b import OptionBPipeline, RefusalError
 from ..redact.placeholder import PlaceholderGenerator, redact
 from ..redact.raw_surgery import (
@@ -37,11 +40,13 @@ from ..redact.restore import restore
 from ..transport.cloud import (
     DEFAULT_UPSTREAM_TIMEOUT,
     StreamResult,
+    aclose_client,
     forward_anthropic_messages,
     forward_anthropic_messages_stream,
     forward_anthropic_raw,
     forward_anthropic_raw_stream,
     forward_chat_completion_stream,
+    get_client,
 )
 
 
@@ -94,7 +99,67 @@ def _body_has_signed_blocks(body: dict[str, Any]) -> bool:
     return False
 
 
-app = FastAPI(title="llm-redactor", version="0.1.0")
+def _raise_fd_limit(target: int = 65536) -> None:
+    """Raise this process's open-file soft limit toward ``target``.
+
+    Each uvicorn worker holds inbound client sockets plus the shared upstream
+    pool; macOS ships a 256 soft limit, low enough that a burst of concurrent
+    requests can hit EMFILE and stop the worker from calling accept() — at
+    which point the gateway sees :7789 as unreachable. Best-effort: a failure
+    here is logged, never fatal.
+    """
+    try:
+        import resource
+
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        new_soft = target if hard == resource.RLIM_INFINITY else min(target, hard)
+        if new_soft > soft:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (new_soft, hard))
+            log_event("fd_limit_raised", soft_before=soft, soft_after=new_soft)
+    except Exception as exc:  # pragma: no cover - platform/permission dependent
+        log_event("fd_limit_raise_failed", error=type(exc).__name__)
+
+
+def _configure_from_env() -> None:
+    """Load config from the environment and wire the pipeline for this worker.
+
+    With ``workers > 1`` uvicorn spawns fresh child processes that re-import
+    this module; module globals set in the parent (via ``configure``) do not
+    survive the spawn. serve() therefore exports the config location via
+    environment variables, and each worker configures itself here — inside its
+    own process and event loop — from the lifespan startup hook.
+    """
+    cfg_path = os.environ.get("LLM_REDACTOR_CONFIG", "llm_redactor.yaml")
+    cfg = load_config(Path(cfg_path))
+    if port := os.environ.get("LLM_REDACTOR_PORT"):
+        cfg.transport.http_port = int(port)
+    if upstream := os.environ.get("LLM_REDACTOR_UPSTREAM"):
+        cfg.cloud_target.endpoint = upstream
+    apply_detection_config(cfg)
+    configure(cfg)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Per-worker startup/shutdown.
+
+    Runs once inside each uvicorn worker process: raise the FD ceiling,
+    self-configure from the environment when the parent didn't (workers > 1),
+    and open/close the shared upstream client alongside the app so its pool is
+    warmed before the first request and drained cleanly on shutdown.
+    """
+    _raise_fd_limit()
+    configure_logging()
+    if _config is None:
+        _configure_from_env()
+    get_client()  # warm the shared upstream pool before the first request
+    try:
+        yield
+    finally:
+        await aclose_client()
+
+
+app = FastAPI(title="llm-redactor", version="0.1.0", lifespan=lifespan)
 
 # Initialized at startup via configure().
 _pipeline: OptionBPipeline | None = None
