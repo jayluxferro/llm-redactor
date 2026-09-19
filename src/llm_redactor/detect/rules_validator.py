@@ -47,6 +47,11 @@ RULES: dict[str, Callable[[str], bool]] = {}
 # only; ``=`` padding is tolerated because some issuers still emit it.
 _B64URL_SEG = re.compile(r"^[A-Za-z0-9_\-]+=*$")
 
+# Trailing phone-extension marker ("ext.", "extension", "x") and its digits.
+# Only the NER ``phone`` kind can carry one — the phone_us/phone_intl
+# regexes use [-.\s] separators and structurally cannot match "ext".
+_EXT_SUFFIX = re.compile(r"(?i)(?:ext(?:ension)?|x)\.?\s*\d{1,6}$")
+
 
 def _digits(text: str) -> str:
     """Strip every separator, keeping digits only."""
@@ -130,8 +135,12 @@ def _phone_intl(text: str) -> bool:
 def _phone(text: str) -> bool:
     # NER ``phone`` spans legitimately lack an international prefix (Presidio
     # flags US-style "(415) 555-2671" too), so only the digit-count sanity
-    # check applies here. Dropping prefix-less phones would leak them.
-    return 8 <= len(_digits(text)) <= 15
+    # check applies here. Dropping prefix-less phones would leak them — same
+    # for extensions: "+1 415 555 2671 ext. 90210" is a real phone whose
+    # digit count crosses the E.164 ceiling only because of the extension,
+    # so the suffix is excluded from the count before the sanity check.
+    without_ext = _EXT_SUFFIX.sub("", text.strip())
+    return 8 <= len(_digits(without_ext)) <= 15
 
 
 def _jwt(text: str) -> bool:
