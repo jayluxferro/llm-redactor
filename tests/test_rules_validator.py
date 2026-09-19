@@ -99,12 +99,31 @@ def test_ssn_valid_kept():
     _keep("ssn", "123456789", source="ner")
 
 
-def test_ssn_forbidden_areas_groups_serials_dropped():
-    _drop("ssn", "000-45-6789", source="ner")  # area 000
-    _drop("ssn", "666-45-6789", source="ner")  # area 666
-    _drop("ssn", "900-45-6789", source="ner")  # area 900-999
-    _drop("ssn", "123-00-6789", source="ner")  # group 00
-    _drop("ssn", "123-45-0000", source="ner")  # serial 0000
+def test_ssn_structurally_impossible_dropped():
+    _drop("ssn", "000-45-6789", source="ner")  # area 000: never issued
+    _drop("ssn", "123-00-6789", source="ner")  # group 00: never issued
+    _drop("ssn", "123-45-0000", source="ner")  # serial 0000: never issued
+
+
+def test_ssn_itin_and_historic_areas_kept():
+    """Regression (hostile review): 900-999 areas are ITINs and 666 was
+    historically allocated — valid, SENSITIVE taxpayer identifiers.  The
+    old rule dropped them in rules mode = leaked them unredacted."""
+    _keep("ssn", "900-45-6789", source="ner")  # ITIN
+    _keep("ssn", "912-45-6789", source="ner")  # ITIN
+    _keep("ssn", "666-45-6789", source="ner")  # historically allocated
+
+
+def test_key_band_below_old_floor_never_dropped():
+    """Regression (hostile review, C1): the old _key_like 20-char floor
+    silently unredacted REAL regex-detected credentials in the [15,20)
+    band — generic_api_key matches {16,} and slack tokens run 15 chars.
+    The rule must never drop something the detector legitimately found."""
+    _keep("generic_api_key", "a3f8k2m9x1p4q7z2", source="regex")  # 16 chars
+    _keep("slack_token", "xoxb-0123456789-12", source="regex")  # 15+ chars
+    _keep("openai_api_key", "sk-proj-short1", source="regex")
+    # Whitespace still means prose, not a key.
+    _drop("generic_api_key", "not a key at all here", source="regex")
 
 
 # --- email -------------------------------------------------------------------
@@ -158,11 +177,14 @@ def test_jwt_three_segments_kept_two_dropped():
 # --- key-shaped kinds --------------------------------------------------------
 
 
-def test_generic_api_key_floor():
+def test_generic_api_key_shape():
+    """Length floors live in the DETECTING REGEXES ({16,} for this kind) —
+    a rule floor above them drops real detected secrets (C1).  The rule's
+    remaining job: whitespace ⇒ prose, not a key."""
     _keep("generic_api_key", "j9K2mN4pQ7rS1tU3vW5xYz")
     _keep("generic_api_key", "AKIAIOSFODNN7EXAMPLE")  # vendor kinds share the rule
-    _drop("generic_api_key", "short123")  # under the length floor
-    _drop("generic_api_key", "--------------------")  # long enough, zero alphanumerics
+    _keep("generic_api_key", "short123")  # under the REGEX floor this span can't be regex-sourced; keep-safe for NER oddities
+    _keep("generic_api_key", "--------------------")
     _drop("generic_api_key", "one two three four five6")  # whitespace ⇒ prose, not a key
 
 
@@ -277,3 +299,27 @@ def test_config_loads_backend_from_yaml(tmp_path: Path):
     cfg_file.write_text("pipeline:\n  llm_validation:\n    enabled: true\n    backend: rules\n")
     cfg = load_config(cfg_file)
     assert cfg.pipeline.llm_validation.backend == "rules"
+
+
+def test_api_key_env_field_rejects_pasted_secrets():
+    """The config file that inspired this: a raw sk-… token sat in
+    api_key_env for months, silently failing os.getenv.  Load must fail
+    loudly instead."""
+    import pytest
+
+    from llm_redactor.config import load_config
+
+    # default + valid names load fine (covered elsewhere); a secret-shaped
+    # value raises with a message that names the field.
+    cfg_text = "cloud_target:\n  api_key_env: sk-7ucp7Ydeadbeef\n"
+    import pathlib
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as fh:
+        fh.write(cfg_text)
+        p = pathlib.Path(fh.name)
+    try:
+        with pytest.raises(ValueError, match="api_key_env"):
+            load_config(p)
+    finally:
+        p.unlink(missing_ok=True)

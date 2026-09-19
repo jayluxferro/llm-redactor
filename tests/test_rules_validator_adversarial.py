@@ -207,12 +207,14 @@ def test_phone_ner_kind_survives_extension_suffix():
 # --- key floor ---------------------------------------------------------------
 
 
-def test_key_floor_boundaries():
-    assert RULES["generic_api_key"]("a" * 17) is False
-    assert RULES["generic_api_key"]("a" * 19) is False
-    assert RULES["generic_api_key"]("a" * 20) is True
+def test_key_rule_boundaries():
+    """C1 regression: NO length floor above the detecting regexes — a rule
+    floor in the [15,20) band dropped REAL 16-char keys.  The rule rejects
+    whitespace only (prose, not a credential)."""
+    assert RULES["generic_api_key"]("a" * 17) is True  # regex floors {16,}; rule keeps
+    assert RULES["generic_api_key"]("a" * 15) is True  # belt: keep when in doubt
     assert RULES["generic_api_key"]("a\tb cde fghij klmno") is False  # whitespace
-    # Unicode letters count as alphanumeric: kept (= redacted), safe direction.
+    # Unicode letters: kept (= redacted), safe direction.
     assert RULES["generic_api_key"]("ΚΛΜΝΞΟΠQRSTUVWXYZ123") is True
 
 

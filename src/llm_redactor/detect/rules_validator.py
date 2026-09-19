@@ -102,8 +102,11 @@ def _ssn(text: str) -> bool:
     if len(digits) != 9:
         return False
     area, group, serial = int(digits[:3]), int(digits[3:5]), int(digits[5:])
-    # Social Security Administration allocation rules.
-    if area in (0, 666) or area >= 900:
+    # Structurally impossible only.  900-999 and 666 are ITIN / historically
+    # allocated — valid, SENSITIVE taxpayer identifiers, so they stay
+    # redacted (a drop here leaks; the hostile review caught 900+ doing
+    # exactly that).  000 area / 00 group / 0000 serial are never issued.
+    if area == 0:
         return False
     return group != 0 and serial != 0
 
@@ -151,14 +154,17 @@ def _jwt(text: str) -> bool:
 
 
 def _key_like(text: str) -> bool:
-    """Shape floor shared by generic and vendor/cloud key kinds: long enough
-    to be a credential, mostly alphanumeric, never containing whitespace
-    (whitespace means we matched prose, not a key)."""
-    if any(c.isspace() for c in text):
-        return False
-    if len(text) < 20:
-        return False
-    return sum(1 for c in text if c.isalnum()) >= 15
+    """Shape sanity shared by generic and vendor/cloud key kinds: never
+    containing whitespace (whitespace means we matched prose, not a key).
+
+    Deliberately NO length floor beyond the detecting regexes' own: every
+    key kind is regex-sourced and the regexes already floor length
+    (generic_api_key {16,}, slack_token 15, vendor kinds 20+).  A rule
+    floor above the detector's can only drop REAL detected secrets — the
+    original 20-char floor silently unredacted 16-char keys (found by the
+    hostile review).  When in doubt, keep: the cost of a false keep is a
+    placeholder, the cost of a false drop is a leaked credential."""
+    return not any(c.isspace() for c in text)
 
 
 def _register(kinds: tuple[str, ...], rule: Callable[[str], bool]) -> None:

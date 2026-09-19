@@ -223,14 +223,38 @@ def _env_overrides(config: Config) -> Config:
     return config
 
 
+def _validate_api_key_env(config: Config) -> None:
+    """``api_key_env`` holds an env-var NAME, not a secret.
+
+    Someone pasting the actual key produces a silent failure: os.getenv
+    misses, auth passes through, and a raw secret sits in a config file
+    (found in the wild by the config audit).  Fail loudly instead — a
+    value that looks like a credential is a configuration error.
+    """
+    import re
+
+    value = config.cloud_target.api_key_env
+    if value and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+        preview = value[:6] + "…" if len(value) > 6 else value
+        raise ValueError(
+            f"cloud_target.api_key_env must be an environment variable NAME "
+            f"(got {preview!r} — looks like a pasted secret; put the key in "
+            f"the environment and reference it by name)"
+        )
+
+
 def load_config(path: Path | None = None) -> Config:
     """Load config from YAML file with env overrides.
 
     Precedence: environment variables > YAML file > dataclass defaults.
     """
     if path is None or not path.exists():
-        return _env_overrides(Config())
+        cfg = _env_overrides(Config())
+        _validate_api_key_env(cfg)
+        return cfg
 
     raw: dict[str, Any] = yaml.safe_load(path.read_text()) or {}
     config = _merge_dataclass(Config, raw)
-    return _env_overrides(config)
+    config = _env_overrides(config)
+    _validate_api_key_env(config)
+    return config
