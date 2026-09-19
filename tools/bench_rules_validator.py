@@ -153,13 +153,14 @@ def _corpus() -> list[Item]:
         items.append(("ssn", ssn, True))
     for ssn in (
         "000-45-6789",
-        "666-45-6789",
-        "900-45-6789",
-        "990-45-6789",
         "123-00-6789",
         "123-45-0000",
     ):
         items.append(("ssn", ssn, False))
+    # ITIN (900-999) and historically-allocated 666: VALID, sensitive — the
+    # rule keeps (= redacts) them since the leak fix (M4).
+    for ssn in ("666-45-6789", "900-45-6789", "990-45-6789"):
+        items.append(("ssn", ssn, True))
 
     # email — NER-source in production (Presidio EMAIL_ADDRESS).
     for mail in (
@@ -232,7 +233,13 @@ def _corpus() -> list[Item]:
         ("heroku_api_key", "f2c1a345-6d7e-4f8a-9b0c-1d2e3f4a5b6c"),
     ]
     items.extend((kind, value, True) for kind, value in keys_valid)
-    keys_invalid = [
+    # Length floors live in the DETECTING REGEXES (C1 fix: a rule floor
+    # above them dropped real 16-char credentials).  The validator's
+    # contract is now "never drop a real detected span" — every
+    # non-whitespace match keeps.  The old "too short to be a key" set is
+    # relabeled valid: detection can't emit these shapes, and if it ever
+    # does, keeping (redacting) is the safe direction.
+    keys_below_detector_floor_keep = [
         ("generic_api_key", "short1"),
         ("generic_api_key", "--------------------"),
         ("openai_api_key", "sk-proj-2short"),
@@ -242,7 +249,9 @@ def _corpus() -> list[Item]:
         ("gitlab_token", "glpat-2short"),
         ("twilio_key", "SKabcdef"),
     ]
-    items.extend((kind, value, False) for kind, value in keys_invalid)
+    items.extend((kind, value, True) for kind, value in keys_below_detector_floor_keep)
+    # The only key-shaped INVALID: whitespace means prose, not a credential.
+    items.append(("generic_api_key", "not a key at all here", False))
 
     # Rule-less kinds — must pass through every arm untouched.
     for kind, value in (

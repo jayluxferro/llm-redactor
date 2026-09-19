@@ -214,6 +214,12 @@ def validate_spans_rules(spans: list[Span]) -> list[Span]:
     Keeps spans whose kind has no rule (mirroring the model validator's
     missing-verdict-⇒-keep contract) and keeps any span whose rule raises —
     a buggy rule must never widen what leaves the proxy unredacted.
+
+    Custom-pattern caution (YAML patterns:): a custom regex that
+    OVERRIDES a ruled kind (e.g. a looser generic_api_key whose group
+    tolerates whitespace) re-arms the whitespace rule against its spans —
+    every match would be dropped as prose.  Keep custom patterns for ruled
+    kinds at least as tight as the built-ins.
     """
     kept: list[Span] = []
     for span in spans:
