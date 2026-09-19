@@ -78,6 +78,7 @@ async def _detect_text(
             use_ner=use_ner,
             ollama_endpoint=_config.local_model.endpoint,
             ollama_model=model,
+            backend=_config.pipeline.llm_validation.backend,
         )
     else:
         spans = detect_all(text, use_ner=use_ner)

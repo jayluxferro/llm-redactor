@@ -43,10 +43,10 @@ test:
 	uv run pytest -v
 
 lint:
-	uv run ruff check src tests evals
+	uv run ruff check src tests evals tools
 
 format-check:
-	uv run ruff format --check src tests evals
+	uv run ruff format --check src tests evals tools
 
 install-hooks:
 	git config core.hooksPath .githooks

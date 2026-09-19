@@ -101,6 +101,7 @@ class OptionBPipeline:
                 use_ner=self.use_ner,
                 ollama_endpoint=self.config.local_model.endpoint,
                 ollama_model=model,
+                backend=self.config.pipeline.llm_validation.backend,
             )
         else:
             # Offload blocking regex+NER off the event loop (see detect_all).

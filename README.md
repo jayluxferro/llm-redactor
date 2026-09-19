@@ -574,6 +574,21 @@ outputs under `evals/results_*`.
 
 Example config: [`examples/operator-hardening.yaml`](examples/operator-hardening.yaml).
 
+## Running without a local LLM
+
+Set `pipeline.llm_validation.backend: "rules"` to replace the Ollama validator
+with deterministic per-kind checks — Luhn for credit cards, the ISO 13616
+mod-97 checksum for IBANs, Social Security Administration allocation rules for
+SSNs, and shape/length floors for emails, phones, JWTs, and API-key-shaped
+secrets. Rules mode needs no local model (no Ollama install, no VRAM, no
+warm-up latency) and, unlike the model backend, it also validates
+regex-sourced spans, so a regex credit-card match with a failing Luhn checksum
+is now dropped instead of always kept. Fuzzy NER kinds (person, location,
+nationality, date_time) intentionally have no rules and pass through, trading
+a little of the model's name-level filtering for determinism and speed;
+`tools/bench_rules_validator.py` benchmarks all three arms (none / rules /
+model) over a labeled corpus if you want the numbers for your own machine.
+
 ## Multilingual / locale NER
 
 Set `local_model.ner_model` in YAML (for example `xx_ent_wiki_sm`) and ensure the spaCy

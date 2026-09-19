@@ -3,6 +3,14 @@ local_model:
   endpoint: http://127.0.0.1:11434
   chat_model: llama3.2:3b
 pipeline:
+  # Validator backend (docs: pipeline.llm_validation.backend):
+  #   model — Ollama KEEP/DROP verdicts on NER spans (default)
+  #   rules — deterministic checksum/shape rules (Luhn, IBAN mod-97, SSA
+  #           areas, key floors). No Ollama needed for validation, and
+  #           regex-sourced spans are validated too instead of auto-kept.
+  # llm_validation:
+  #   enabled: true
+  #   backend: rules
   opt_a_local_only:
     enabled: true
   opt_b_redact:

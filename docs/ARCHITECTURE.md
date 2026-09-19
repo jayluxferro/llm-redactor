@@ -154,7 +154,7 @@ cloud_target:
   api_key_env: OPENAI_API_KEY
 
 pipeline:
-  llm_validation:      { enabled: false, model: "" }  # Ollama validation of NER spans
+  llm_validation:      { enabled: false, model: "", backend: "model" }  # or "rules": checksum validators, no Ollama
   placeholder_request_tag: false  # random tag inside each placeholder per HTTP/MCP call
   opt_a_local_only:    { enabled: false }  # opt-in for privacy-max mode
   opt_b_redact:        { enabled: true, strict: true }

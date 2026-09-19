@@ -190,21 +190,39 @@ async def detect_all_validated(
     use_ner: bool = True,
     ollama_endpoint: str = "http://127.0.0.1:11434",
     ollama_model: str = "llama3.2:3b",
+    backend: str = "model",
 ) -> list[Span]:
-    """Run all detectors, then validate NER spans with a local LLM.
+    """Run all detectors, then validate spans.
 
-    This is the high-accuracy path: regex + NER + LLM validation.
-    Adds one Ollama round-trip but dramatically reduces false positives
-    (drug names, abbreviations, generic words) while confirming real PII.
+    Two backends:
+
+    - ``"model"`` (default): ask a local Ollama chat model for KEEP/DROP
+      verdicts on NER spans. Adds one round-trip but dramatically reduces
+      false positives (drug names, abbreviations, generic words) while
+      confirming real PII.
+    - ``"rules"``: deterministic checksum/shape rules per kind. No Ollama,
+      and regex-sourced spans are validated too (a regex credit_card match
+      with a failing Luhn checksum is dropped instead of auto-kept).
     """
-    from .llm_validator import validate_spans
+    if backend not in {"model", "rules"}:
+        # Guard direct callers that bypass config loading (where the same
+        # check runs in LLMValidationConfig.__post_init__).
+        raise ValueError(f"llm_validation backend must be 'model' or 'rules', got {backend!r}")
 
     # Push the blocking regex+NER work onto a thread so the event loop stays
     # free to accept new connections while spaCy runs.
     merged = await asyncio.to_thread(_detect_and_merge, text, use_ner)
 
-    # LLM validation pass — only validates NER spans (regex are auto-kept).
+    # Validation pass — fail-open: if the validator itself breaks, keep the
+    # detected spans (detection quality degrades gracefully, never fatally).
     try:
+        if backend == "rules":
+            from .rules_validator import validate_spans_rules
+
+            return validate_spans_rules(merged)
+
+        from .llm_validator import validate_spans
+
         return await validate_spans(
             text,
             merged,
@@ -213,7 +231,8 @@ async def detect_all_validated(
         )
     except Exception as exc:
         _LOG.warning(
-            "local LLM validation unavailable; retaining detected spans: %s",
+            "%s validation unavailable; retaining detected spans: %s",
+            backend,
             type(exc).__name__,
         )
         return merged

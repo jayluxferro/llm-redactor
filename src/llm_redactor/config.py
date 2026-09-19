@@ -44,10 +44,25 @@ class OptionConfig:
 
 @dataclass
 class LLMValidationConfig:
-    """Optional local LLM pass to filter NER false positives (Ollama)."""
+    """Optional validation pass to filter detector false positives."""
 
-    enabled: bool = False  # opt-in: adds one Ollama round-trip per text/message batch
+    enabled: bool = False  # opt-in: adds one validation pass per text/message batch
     model: str = ""  # empty = use local_model.chat_model
+    # "model" — ask a local Ollama chat model for KEEP/DROP verdicts (NER spans
+    #   only; regex spans are auto-kept).
+    # "rules" — deterministic checksum/shape rules per kind. No Ollama, and
+    #   regex-sourced spans are validated too (a regex credit_card with a
+    #   failing Luhn checksum is dropped instead of always kept).
+    backend: str = "model"
+
+    def __post_init__(self) -> None:
+        # Fail at config load, not on the first request: an unknown backend
+        # would otherwise silently fall through to whichever branch a caller
+        # happens to compare first.
+        if self.backend not in {"model", "rules"}:
+            raise ValueError(
+                f"pipeline.llm_validation.backend must be 'model' or 'rules', got {self.backend!r}"
+            )
 
 
 @dataclass
