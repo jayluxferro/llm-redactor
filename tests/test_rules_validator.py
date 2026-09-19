@@ -311,7 +311,7 @@ def test_api_key_env_field_rejects_pasted_secrets():
 
     # default + valid names load fine (covered elsewhere); a secret-shaped
     # value raises with a message that names the field.
-    cfg_text = "cloud_target:\n  api_key_env: sk-7ucp7Ydeadbeef\n"
+    cfg_text = "cloud_target:\n  api_key_env: sk-PASTED-SECRET-NOT-REAL\n"
     import pathlib
     import tempfile
 
