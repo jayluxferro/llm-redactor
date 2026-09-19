@@ -183,7 +183,9 @@ def test_generic_api_key_shape():
     remaining job: whitespace ⇒ prose, not a key."""
     _keep("generic_api_key", "j9K2mN4pQ7rS1tU3vW5xYz")
     _keep("generic_api_key", "AKIAIOSFODNN7EXAMPLE")  # vendor kinds share the rule
-    _keep("generic_api_key", "short123")  # under the REGEX floor this span can't be regex-sourced; keep-safe for NER oddities
+    # Under the REGEX floor this span can't be regex-sourced; keep-safe
+    # for NER oddities.
+    _keep("generic_api_key", "short123")
     _keep("generic_api_key", "--------------------")
     _drop("generic_api_key", "one two three four five6")  # whitespace ⇒ prose, not a key
 
