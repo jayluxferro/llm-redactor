@@ -126,7 +126,7 @@ Anthropic Messages API (`/v1/messages`).
 ```yaml
 cloud_target:
   endpoint: https://api.openai.com/v1   # where to forward after redaction
-  api_key_env: OPENAI_API_KEY            # env var holding the API key
+  api_key_env: OPENAI_API_KEY            # env var NAME (a pasted secret fails loudly at load)
 pipeline:
   opt_b_redact: { enabled: true, strict: false }
 ```
