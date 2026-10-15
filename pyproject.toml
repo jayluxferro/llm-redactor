@@ -21,9 +21,15 @@ dependencies = [
   "presidio-analyzer>=2.2",
   "presidio-anonymizer>=2.2",
   "spacy>=3.7",
+  # spaCy NER model (default) — source pinned in [tool.uv.sources] so `uv sync` keeps it installed.
+  "en-core-web-sm==3.8.0",
   "typer>=0.15",
   "rich>=13.0",
   "tiktoken>=0.8",
+  # Security pins — transitive deps with known advisories; floor patched versions.
+  "pyjwt>=2.15.0",
+  "urllib3>=2.8.0",
+  "anyio>=4.14.2",
 ]
 
 [project.optional-dependencies]
@@ -43,6 +49,7 @@ image = [
 ner-trf = [
   "spacy-transformers>=1.3",
   "torch>=2.0",
+  "en-core-web-trf==3.8.0",
 ]
 
 [project.scripts]
@@ -77,3 +84,7 @@ warn_unused_ignores = true
 [[tool.mypy.overrides]]
 module = ["onnxruntime", "PIL", "PIL.*"]
 ignore_missing_imports = true
+
+[tool.uv.sources]
+en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
+en-core-web-trf = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_trf-3.8.0/en_core_web_trf-3.8.0-py3-none-any.whl" }
