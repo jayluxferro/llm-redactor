@@ -38,9 +38,12 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     ),
     "employee_id": re.compile(r"\bEMP-\d{4,6}\b"),
     # ── Passwords & secrets in assignments ────────────────────────────────
-    "password": re.compile(r"(?i)(?:password|passwd|pwd|pass)[\s]*[=:]\s*['\"]?(\S{4,})['\"]?"),
+    "password": re.compile(
+        r"(?i)(?:password|passwd|pwd|pass)[\s]*[=:]\s*"
+        r"(?:\"([^\"\r\n]{4,})\"|'([^'\r\n]{4,})'|(\S{4,}))"
+    ),
     "secret_assignment": re.compile(
-        r"(?i)(?:secret|token|credential|auth)[\s]*[=:]\s*['\"]?([A-Za-z0-9\-_.+/=]{8,})['\"]?"
+        r"(?i)(?:secret|token|credential|auth)[\s]*[=:]\s*['\"]?([A-Za-z0-9\-_.:+/=]{8,})['\"]?"
     ),
     "connection_string": re.compile(
         r"(?i)(?:mongodb(?:\+srv)?|postgres(?:ql)?|mysql|redis|amqp|mssql)://[^\s'\"]{10,}"
@@ -70,7 +73,10 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     # ── API keys by vendor ────────────────────────────────────────────────
     "openai_api_key": re.compile(r"\bsk-(?:proj-)?[a-zA-Z0-9\-_]{20,}\b"),
     "anthropic_api_key": re.compile(r"\bsk-ant-(?:api03-)?[a-zA-Z0-9\-_]{20,}\b"),
-    "github_token": re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b"),
+    "github_token": re.compile(
+        r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b"
+        r"|\bgithub_pat_[A-Za-z0-9_]{22}_[A-Za-z0-9]{59}\b"
+    ),
     "gitlab_token": re.compile(r"\bgl(?:pat|ptt|dt|rt|at)-[A-Za-z0-9\-_]{20,}\b"),
     "slack_token": re.compile(r"\bxox[baprs]-[0-9A-Za-z\-]{10,}\b"),
     "slack_webhook": re.compile(
@@ -88,19 +94,30 @@ PATTERNS: dict[str, re.Pattern[str]] = {
         r"(?i)heroku[_\-]?(?:api[_\-]?)?(?:key|token)[\s]*[=:\s]+['\"]?"
         r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})['\"]?"
     ),
+    "telegram_bot_token": re.compile(r"\b\d{5,12}:[A-Za-z0-9_-]{30,}\b"),
+    "discord_token": re.compile(r"\bMTA[0-9A-Za-z_-]{20,}\b"),
     # ── Generic patterns ──────────────────────────────────────────────────
     "generic_api_key": re.compile(
         r"(?i)(?:api[_\-]?key|apikey|secret[_\-]?key|access[_\-]?token|auth[_\-]?token)"
-        r"[\s]*[=:]\s*['\"]?([A-Za-z0-9\-_.+/=]{16,})['\"]?"
+        r"[\s]*[=:]\s*['\"]?([A-Za-z0-9\-_.:+/=]{16,})['\"]?"
     ),
     "bearer_token": re.compile(r"(?i)bearer\s+[A-Za-z0-9\-_.~+/]{20,}=*"),
     "basic_auth": re.compile(r"(?i)basic\s+[A-Za-z0-9+/]{20,}={0,2}"),
     "jwt": re.compile(r"\beyJ[A-Za-z0-9\-_]+\.eyJ[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_.+/=]+\b"),
     "private_key_pem": re.compile(
         r"-----BEGIN (?:RSA |EC |DSA |ED25519 |ENCRYPTED )?PRIVATE KEY-----"
+        r".*?"
+        r"-----END (?:RSA |EC |DSA |ED25519 |ENCRYPTED )?PRIVATE KEY-----",
+        re.DOTALL,
     ),
-    "ssh_private_key": re.compile(r"-----BEGIN OPENSSH PRIVATE KEY-----"),
-    "pgp_private_key": re.compile(r"-----BEGIN PGP PRIVATE KEY BLOCK-----"),
+    "ssh_private_key": re.compile(
+        r"-----BEGIN OPENSSH PRIVATE KEY-----.*?-----END OPENSSH PRIVATE KEY-----",
+        re.DOTALL,
+    ),
+    "pgp_private_key": re.compile(
+        r"-----BEGIN PGP PRIVATE KEY BLOCK-----.*?-----END PGP PRIVATE KEY BLOCK-----",
+        re.DOTALL,
+    ),
     # ── Hostnames ─────────────────────────────────────────────────────────
     "hostname_internal": re.compile(
         r"\b[a-z][a-z0-9\-]+\.(?:internal|local|corp|lan|intranet|private|staging|dev)\b"
@@ -130,19 +147,27 @@ def load_custom_patterns(path: str) -> None:
         _custom_patterns[kind] = re.compile(pattern_str)
 
 
+def _match_span(match: re.Match[str]) -> tuple[int, int, str]:
+    """Prefer the first participating capture group, else the whole match.
+
+    Patterns such as ``password`` use alternation with several groups (double-
+    quoted value with spaces, single-quoted, or unquoted); exactly one
+    alternative participates per match, so the first non-None group is the
+    value to redact.
+    """
+    for i in range(1, match.re.groups + 1):
+        if match.group(i) is not None:
+            return match.start(i), match.end(i), match.group(i)
+    return match.start(), match.end(), match.group()
+
+
 def detect_regex(text: str) -> list[Span]:
     """Run all regex patterns against text and return detected spans."""
     spans: list[Span] = []
     all_patterns = {**PATTERNS, **_custom_patterns}
     for kind, pattern in all_patterns.items():
         for match in pattern.finditer(text):
-            # Use the full match or group(1) if the pattern captures a group
-            if match.lastindex and match.lastindex >= 1:
-                start, end = match.start(1), match.end(1)
-                matched_text = match.group(1)
-            else:
-                start, end = match.start(), match.end()
-                matched_text = match.group()
+            start, end, matched_text = _match_span(match)
             spans.append(
                 Span(
                     start=start,

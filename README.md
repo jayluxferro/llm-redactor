@@ -478,6 +478,8 @@ policy:
 | | `npm_token` | regex | npm access token |
 | | `pypi_token` | regex | PyPI API token |
 | | `heroku_api_key` | regex | Heroku API key (UUID format) |
+| | `telegram_bot_token` | regex | Telegram bot token (`<bot_id>:<secret>`) |
+| | `discord_token` | regex | Discord bot token (`MTA…`) |
 | **private_key** | `private_key_pem` | regex | PEM-encoded private key |
 | | `ssh_private_key` | regex | OpenSSH private key |
 | | `pgp_private_key` | regex | PGP private key block |

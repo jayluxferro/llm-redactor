@@ -82,6 +82,8 @@ CATEGORY_MAP: dict[str, str] = {
     "npm_token": "vendor_api_key",
     "pypi_token": "vendor_api_key",
     "heroku_api_key": "vendor_api_key",
+    "telegram_bot_token": "vendor_api_key",
+    "discord_token": "vendor_api_key",
     # ── private_key ───────────────────────────────────────────────────────
     "private_key_pem": "private_key",
     "ssh_private_key": "private_key",

@@ -203,6 +203,8 @@ _register(
         "npm_token",
         "pypi_token",
         "heroku_api_key",
+        "telegram_bot_token",
+        "discord_token",
     ),
     _key_like,
 )
