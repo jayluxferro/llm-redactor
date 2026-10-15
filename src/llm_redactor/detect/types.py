@@ -35,18 +35,22 @@ CATEGORY_MAP: dict[str, str] = {
     "nationality": "identity",
     "employee_id": "identity",
     "dob": "identity",
+    "org_name": "identity",
     # ── contact ───────────────────────────────────────────────────────────
     "email": "contact",
     "phone": "contact",
     "phone_us": "contact",
     "phone_intl": "contact",
     "location": "contact",
+    "address": "contact",
     "url": "contact",
     "ip_address": "contact",
     "ip_v4": "contact",
     "ip_v6": "contact",
     # ── government_id ─────────────────────────────────────────────────────
     "ssn": "government_id",
+    "us_itin": "government_id",
+    "driver_license": "government_id",
     "passport_number": "government_id",
     "ein": "government_id",
     # ── financial ─────────────────────────────────────────────────────────
@@ -56,10 +60,12 @@ CATEGORY_MAP: dict[str, str] = {
     "us_bank_account": "financial",
     "crypto_btc": "financial",
     "crypto_eth": "financial",
+    "crypto_wallet": "financial",
     # ── medical ───────────────────────────────────────────────────────────
     "medical_license": "medical",
     "npi": "medical",
     "dea_number": "medical",
+    "uk_nhs": "medical",
     # ── temporal ──────────────────────────────────────────────────────────
     "date_time": "temporal",
     # ── credential ────────────────────────────────────────────────────────

@@ -39,6 +39,19 @@ PATTERNS: dict[str, re.Pattern[str]] = {
         r"[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{1,4}\b"
     ),
     "employee_id": re.compile(r"\bEMP-\d{4,6}\b"),
+    # Street addresses.  NER tags only the *city* in a mailing address, so the
+    # street line and ZIP leaked; this anchor catches the whole address.
+    # Number-first anchoring keeps the false-positive rate low.
+    "address": re.compile(
+        r"\b\d{1,6}\s+(?:[A-Z][A-Za-z0-9.'\-]*\s+){0,4}"
+        r"(?i:Street|St|Avenue|Ave|Road|Rd|Drive|Dr|Lane|Ln|Boulevard|Blvd|"
+        r"Circle|Cir|Court|Ct|Way|Place|Pl|Terrace|Ter|Highway|Hwy|Parkway|"
+        r"Pkwy|Square|Sq|Trail|Trl|Loop|Alley|Crescent|Cres|"
+        r"Street|Avenue)\.?"
+        r"(?:\s*,?\s*(?:Apt|Suite|Ste|Unit|Bldg|Floor|Fl|#)\.?\s*[A-Za-z0-9\-]+)?"
+        r"(?:\s*,\s*[A-Z][A-Za-z.'\-]+(?:\s+[A-Z][A-Za-z.'\-]+)*)?"
+        r"(?:\s*,?\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?)?"
+    ),
     # ── Government identifiers ────────────────────────────────────────────
     # Context-anchored: a bare "9 digits" or "2-7 digits" pattern is all
     # false positives, so the keyword carries the precision and the capture
@@ -83,7 +96,8 @@ PATTERNS: dict[str, re.Pattern[str]] = {
         r"(?:\"([^\"\r\n]{4,})\"|'([^'\r\n]{4,})'|(\S{4,}))"
     ),
     "secret_assignment": re.compile(
-        r"(?i)(?:secret|token|credential|auth)[\s]*[=:]\s*['\"]?([A-Za-z0-9\-_.:+/=]{8,})['\"]?"
+        r"(?i)['\"]?(?:secret|token|credential|auth)['\"]?[\s]*[=:]\s*"
+        r"['\"]?([A-Za-z0-9\-_.:+/=]{8,})['\"]?"
     ),
     "connection_string": re.compile(
         r"(?i)(?:mongodb(?:\+srv)?|postgres(?:ql)?|mysql|redis|amqp|mssql)://[^\s'\"]{10,}"
@@ -94,8 +108,11 @@ PATTERNS: dict[str, re.Pattern[str]] = {
         r"\b(?:A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}\b"
     ),
     "aws_secret_key": re.compile(
-        r"(?i)(?:aws)?[_\-]?(?:secret)?[_\-]?(?:access)?[_\-]?key[\s]*[=:]\s*['\"]?"
-        r"([A-Za-z0-9/+=]{40})['\"]?"
+        r"(?i)['\"]?(?:aws)?[_\-]?(?:secret)?[_\-]?(?:access)?[_\-]?key['\"]?"
+        # Allow the value to be separated from its key name, as in Terraform's
+        # `variable "aws_secret_key" { default = "..." }` — the 40-char base64
+        # value keeps this from matching prose.
+        r"[^=]{0,40}[=:]\s*['\"]?([A-Za-z0-9/+=]{40})['\"]?"
     ),
     "aws_session_token": re.compile(
         r"(?i)aws[_\-]?session[_\-]?token[\s]*[=:]\s*['\"]?([A-Za-z0-9/+=]{100,})['\"]?"
@@ -138,8 +155,8 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     "discord_token": re.compile(r"\bMTA[0-9A-Za-z_-]{20,}\b"),
     # ── Generic patterns ──────────────────────────────────────────────────
     "generic_api_key": re.compile(
-        r"(?i)(?:api[_\-]?key|apikey|secret[_\-]?key|access[_\-]?token|auth[_\-]?token)"
-        r"[\s]*[=:]\s*['\"]?([A-Za-z0-9\-_.:+/=]{16,})['\"]?"
+        r"(?i)['\"]?(?:api[_\-]?key|apikey|secret[_\-]?key|access[_\-]?token|auth[_\-]?token)"
+        r"['\"]?[\s]*[=:]\s*['\"]?([A-Za-z0-9\-_.:+/=]{16,})['\"]?"
     ),
     "bearer_token": re.compile(r"(?i)bearer\s+[A-Za-z0-9\-_.~+/]{20,}=*"),
     "basic_auth": re.compile(r"(?i)basic\s+[A-Za-z0-9+/]{20,}={0,2}"),

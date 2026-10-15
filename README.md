@@ -439,11 +439,13 @@ policy:
 | | `nationality` | NER | National, religious, or political group |
 | | `employee_id` | regex | Employee identifier (e.g. `EMP-1234`) |
 | | `dob` | regex | Date of birth (context-anchored) |
+| | `org_name` | NER | Organisation / company name |
 | **contact** | `email` | regex, NER | Email address |
 | | `phone` | NER | Phone number (NER-detected) |
 | | `phone_us` | regex | US phone number |
 | | `phone_intl` | regex | International phone number |
 | | `location` | NER | Physical location / address |
+| | `address` | regex | Street address (number-first anchored) |
 | | `url` | NER | URL |
 | | `ip_address` | NER | IP address (NER-detected) |
 | | `ip_v4` | regex | IPv4 address |
@@ -451,15 +453,19 @@ policy:
 | **government_id** | `ssn` | regex, NER | US Social Security Number |
 | | `passport_number` | regex | Passport number (context-anchored) |
 | | `ein` | regex | US Employer Identification Number (context-anchored) |
+| | `us_itin` | NER | US Individual Taxpayer Identification Number |
+| | `driver_license` | NER | US driver's licence number |
 | **financial** | `credit_card` | regex, NER | Credit card number (Luhn-validated) |
 | | `us_routing_number` | regex | US ABA routing number (checksum-validated) |
 | | `us_bank_account` | regex | Bank account number (context-anchored) |
 | | `crypto_btc` | regex | Bitcoin wallet address |
 | | `crypto_eth` | regex | Ethereum wallet address |
+| | `crypto_wallet` | NER | Crypto wallet address (Presidio) |
 | | `iban` | regex, NER | IBAN bank account number (mod-97 validated) |
 | **medical** | `medical_license` | NER | Medical license number |
 | | `npi` | regex | US National Provider Identifier (checksum-validated) |
 | | `dea_number` | regex | DEA registration number (checksum-validated) |
+| | `uk_nhs` | NER | UK NHS number |
 | **temporal** | `date_time` | NER | Date or time expression |
 | **credential** | `password` | regex | Password in assignment |
 | | `secret_assignment` | regex | Secret/token/credential in assignment |

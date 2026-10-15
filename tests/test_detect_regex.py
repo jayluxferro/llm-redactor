@@ -118,3 +118,42 @@ def test_detects_government_and_bank_identifiers_in_context():
     assert "passport_number" in {s.kind for s in detect_regex("Passport Number: 123456789")}
     assert "ein" in {s.kind for s in detect_regex("EIN: 12-3456789")}
     assert "us_bank_account" in {s.kind for s in detect_regex("Account Number: 000123456789")}
+
+
+def test_detects_street_address_including_zip():
+    # NER tags only the city, so the street line and ZIP used to leak.
+    spans = detect_regex("Ship to: 9295 Pine Drive, Burlington, OR 38893")
+    addr = next(s for s in spans if s.kind == "address")
+    assert "Pine Drive" in addr.text
+    assert "38893" in addr.text
+
+
+def test_detects_quoted_key_names():
+    # JSON/YAML style — the key name itself is quoted.
+    spans = detect_regex('"aws_secret_key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"')
+    assert "aws_secret_key" in {s.kind for s in spans}
+
+
+def test_detects_secret_value_separated_from_its_key_name():
+    # Terraform: `variable "aws_secret_key" { default = "..." }`
+    text = 'variable "aws_secret_key" {\n  default = "JH4opo5s85Ticsvsz3Wu3cziR98VL0fIhrbgoUZF"\n}'
+    assert "aws_secret_key" in {s.kind for s in detect_regex(text)}
+
+
+def test_presidio_map_covers_org_and_shipped_recognisers():
+    from llm_redactor.detect.ner import PRESIDIO_KIND_MAP
+
+    # Presidio normalises spaCy's ORG to ORGANIZATION; keying on "ORG" silently
+    # dropped every organisation name.
+    assert PRESIDIO_KIND_MAP["ORGANIZATION"] == "org_name"
+    # Recognisers Presidio ships and already runs — unmapped entries were
+    # detected and then discarded.
+    for entity in (
+        "US_PASSPORT",
+        "US_DRIVER_LICENSE",
+        "US_ITIN",
+        "UK_NHS",
+        "CRYPTO",
+        "MAC_ADDRESS",
+    ):
+        assert entity in PRESIDIO_KIND_MAP

@@ -68,12 +68,23 @@ def _get_analyzer():
 # Map presidio entity types to our kind taxonomy.
 PRESIDIO_KIND_MAP: dict[str, str] = {
     "PERSON": "person",
+    # Presidio normalises spaCy's ORG label to ORGANIZATION — keying this map on
+    # "ORG" silently dropped every organisation name (139/139 leaked in wl1_pii).
+    "ORGANIZATION": "org_name",
     "EMAIL_ADDRESS": "email",
     "PHONE_NUMBER": "phone",
     "CREDIT_CARD": "credit_card",
     "IBAN_CODE": "iban",
     "IP_ADDRESS": "ip_address",
     "US_SSN": "ssn",
+    # Recognisers Presidio ships and already runs; unmapped entries were
+    # discarded after detection, so the cost of adding them here is zero.
+    "US_ITIN": "us_itin",
+    "US_PASSPORT": "passport_number",
+    "US_DRIVER_LICENSE": "driver_license",
+    "UK_NHS": "uk_nhs",
+    "CRYPTO": "crypto_wallet",
+    "MAC_ADDRESS": "mac_address",
     "LOCATION": "location",
     "DATE_TIME": "date_time",
     "NRP": "nationality",
