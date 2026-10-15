@@ -58,3 +58,6 @@ git-push
 config.yaml
 config-*.yaml
 log-trail
+
+# Working scratch (job artifacts, downloaded models, eval harness)
+tmp/
