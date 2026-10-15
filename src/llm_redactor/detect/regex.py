@@ -92,7 +92,7 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     "mac_address": re.compile(r"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b"),
     # ── Passwords & secrets in assignments ────────────────────────────────
     "password": re.compile(
-        r"(?i)(?:password|passwd|pwd|pass)[\s]*[=:]\s*"
+        r"(?i)(?:password|passwd|pwd|pass)['\"]?[\s]*[=:]\s*"
         r"(?:\"([^\"\r\n]{4,})\"|'([^'\r\n]{4,})'|(\S{4,}))"
     ),
     "secret_assignment": re.compile(
@@ -109,10 +109,13 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     ),
     "aws_secret_key": re.compile(
         r"(?i)['\"]?(?:aws)?[_\-]?(?:secret)?[_\-]?(?:access)?[_\-]?key['\"]?"
-        # Allow the value to be separated from its key name, as in Terraform's
-        # `variable "aws_secret_key" { default = "..." }` — the 40-char base64
-        # value keeps this from matching prose.
-        r"[^=]{0,40}[=:]\s*['\"]?([A-Za-z0-9/+=]{40})['\"]?"
+        # Separator: an assignment that may sit away from its key name
+        # (Terraform's `variable "aws_secret_key" { default = "..." }`), or a
+        # bare whitespace gap — `aws configure list` prints
+        # `secret_key     <value>` with no `=` at all.  The value itself may
+        # contain `=` (base64 padding), so it has to be matched whole.
+        r"(?:[^=]{0,40}[=:]|[^\S\n]*)"
+        r"\s*['\"]?([A-Za-z0-9/+=]{40})['\"]?"
     ),
     "aws_session_token": re.compile(
         r"(?i)aws[_\-]?session[_\-]?token[\s]*[=:]\s*['\"]?([A-Za-z0-9/+=]{100,})['\"]?"
@@ -155,7 +158,7 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     "discord_token": re.compile(r"\bMTA[0-9A-Za-z_-]{20,}\b"),
     # ── Generic patterns ──────────────────────────────────────────────────
     "generic_api_key": re.compile(
-        r"(?i)['\"]?(?:api[_\-]?key|apikey|secret[_\-]?key|access[_\-]?token|auth[_\-]?token)"
+        r"(?i)['\"]?(?:api[_\-]?key|apikey|secret[_\-]?key|access[_\-]?token|auth[_\-]?token|key)"
         r"['\"]?[\s]*[=:]\s*['\"]?([A-Za-z0-9\-_.:+/=]{16,})['\"]?"
     ),
     "bearer_token": re.compile(r"(?i)bearer\s+[A-Za-z0-9\-_.~+/]{20,}=*"),

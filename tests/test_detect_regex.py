@@ -125,6 +125,22 @@ def test_hostname_internal_consumes_whole_fqdn():
         assert spans[0].text == host
 
 
+def test_detects_quoted_json_key_and_yaml_nested_leaf_key():
+    # JSON: the key name itself is quoted, so `password"` must still reach `:`.
+    assert "password" in {s.kind for s in detect_regex('"password": "C!UNSFj!p9AM"')}
+    # YAML nested under a parent — the leaf name is a bare `key`.
+    assert "generic_api_key" in {
+        s.kind for s in detect_regex('api:\n  key: "VvdPb6-ZmfT6SEtNwjEJRSuEV7UGbDFJID"')
+    }
+
+
+def test_detects_aws_secret_key_from_cli_listing():
+    # `aws configure list` prints key<whitespace>value with no '=' at all, and
+    # the value itself contains '=' (base64 padding).
+    text = "secret_key     h1whtwc=2KDcJw0ksX=IvS/bmiL2v1afn2NdT4CF shared-credentials-file"
+    assert "aws_secret_key" in {s.kind for s in detect_regex(text)}
+
+
 def test_detects_government_and_bank_identifiers_in_context():
     assert "dob" in {s.kind for s in detect_regex("DOB: 1985-04-12")}
     assert "passport_number" in {s.kind for s in detect_regex("Passport Number: 123456789")}
