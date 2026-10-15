@@ -176,8 +176,13 @@ PATTERNS: dict[str, re.Pattern[str]] = {
         re.DOTALL,
     ),
     # ── Hostnames ─────────────────────────────────────────────────────────
+    # Must consume the WHOLE FQDN: stopping at the internal label left the rest
+    # of the name in the clear ("cache-04.corp" redacted, ".globex.net" leaked).
+    # "infra" and friends were missing from the label list entirely.
     "hostname_internal": re.compile(
-        r"\b[a-z][a-z0-9\-]+\.(?:internal|local|corp|lan|intranet|private|staging|dev)\b"
+        r"\b[a-z][a-z0-9\-]*\."
+        r"(?:internal|local|corp|lan|intranet|private|staging|dev|infra|test|qa|k8s|cluster|svc)"
+        r"(?:\.[a-z0-9\-]+)*\b"
     ),
 }
 

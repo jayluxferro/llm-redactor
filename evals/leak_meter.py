@@ -4,6 +4,11 @@ Three levels of leak measurement:
 
 1. **Exact leak**: ground-truth annotation text appears verbatim in outgoing text.
 2. **Partial leak**: a substring (≥4 chars) of the annotation appears in outgoing text.
+
+Both are evaluated against the outgoing text with placeholder tokens stripped
+(see ``_redacted_view``).  Placeholders embed the kind name — ``⟨PRIVATE_KEY_PEM_1⟩`` —
+so matching them directly counts the placeholder's own words as surviving
+sensitive text and inflates the rate for exactly the kinds we most care about.
 3. **Semantic leak** (WL3 only): a judge model determines whether the redacted text
    still identifies the same individual/org. Requires an API call.
 
@@ -12,6 +17,7 @@ All rates are fractions in [0.0, 1.0].
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +25,20 @@ from .runner import RunResult
 from .schema import Sample, read_workload
 
 MIN_PARTIAL_LEN = 4  # minimum substring length for partial leak
+
+# Placeholder tokens, e.g. ``⟨PRIVATE_KEY_PEM_1⟩``.
+_PLACEHOLDER = re.compile(r"⟨[^⟩]*⟩")
+
+
+def _redacted_view(outgoing: str) -> str:
+    """Outgoing text with placeholder tokens elided, for leak matching.
+
+    A redacted PEM header used to score as a 1.00 leak purely because the
+    placeholder that replaced it, ``⟨PRIVATE_KEY_PEM_1⟩``, contains the word
+    PRIVATE that the annotation also contains.  Placeholder bytes are not the
+    source text, so they must not count as surviving content.
+    """
+    return _PLACEHOLDER.sub(" ", outgoing)
 
 
 @dataclass
@@ -42,7 +62,7 @@ def measure_leaks(
     run_result: RunResult,
 ) -> LeakResult:
     """Measure leak rates by comparing annotations against outgoing text."""
-    outgoing = run_result.outgoing_text
+    outgoing = _redacted_view(run_result.outgoing_text)
     exact_leaks = 0
     partial_leaks = 0
     leaked_kinds: dict[str, int] = {}

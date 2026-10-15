@@ -113,6 +113,18 @@ def test_detects_mac_address():
     assert "mac_address" in {s.kind for s in detect_regex("nic 00:1A:2B:3C:4D:5E up")}
 
 
+def test_hostname_internal_consumes_whole_fqdn():
+    # Stopping at the internal label left the rest of the name in the clear.
+    for host in (
+        "cache-04.corp.globex.net",
+        "web-10.infra.initech.io",
+        "api-08.internal.acme.com",
+    ):
+        spans = [s for s in detect_regex(host) if s.kind == "hostname_internal"]
+        assert spans, host
+        assert spans[0].text == host
+
+
 def test_detects_government_and_bank_identifiers_in_context():
     assert "dob" in {s.kind for s in detect_regex("DOB: 1985-04-12")}
     assert "passport_number" in {s.kind for s in detect_regex("Passport Number: 123456789")}
