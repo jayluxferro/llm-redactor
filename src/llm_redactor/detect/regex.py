@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 
+from . import checksums
 from .types import Span
 
 # ---------------------------------------------------------------------------
@@ -37,6 +39,44 @@ PATTERNS: dict[str, re.Pattern[str]] = {
         r"[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{1,4}\b"
     ),
     "employee_id": re.compile(r"\bEMP-\d{4,6}\b"),
+    # ── Government identifiers ────────────────────────────────────────────
+    # Context-anchored: a bare "9 digits" or "2-7 digits" pattern is all
+    # false positives, so the keyword carries the precision and the capture
+    # group keeps only the identifier itself.
+    "passport_number": re.compile(
+        r"(?i)passport\s*(?:number|no\.?|#|id)?\s*[:=]?\s*([A-Z]{0,2}\d{7,9})\b"
+    ),
+    "ein": re.compile(
+        r"(?i)\b(?:ein|employer\s+id(?:entification)?|tax\s+id|tin)\b\s*[:=#]?\s*(\d{2}-?\d{7})\b"
+    ),
+    "dob": re.compile(
+        r"(?i)(?:date\s+of\s+birth|d\.?o\.?b\.?|birth\s*date|born(?:\s+on)?)"
+        r"\s*[:=]?\s*(\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4})"
+    ),
+    # ── Financial: bank accounts & crypto wallets ─────────────────────────
+    "iban": re.compile(r"\b[A-Z]{2}\d{2}(?:[ ]?[A-Z0-9]{1,4}){3,8}\b"),
+    "us_routing_number": re.compile(
+        r"(?i)(?:routing|aba|rtn)\s*(?:number|no\.?|#)?\s*[:=]?\s*(\d{9})"
+    ),
+    "us_bank_account": re.compile(
+        r"(?i)(?:account|acct)\s*(?:number|no\.?|#)\s*[:=]?\s*(\d{6,17})"
+    ),
+    # Wallet addresses are unrecoverable if leaked (transfers are final), so
+    # they are treated as critical even though they are not "identity" data.
+    "crypto_btc": re.compile(r"\b(?:bc1[a-z0-9]{25,62}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})\b"),
+    "crypto_eth": re.compile(r"\b0x[a-fA-F0-9]{40}\b"),
+    # ── Medical identifiers (checksum-validated at detection time) ────────
+    # Context-anchored AND keyword-inclusive on purpose.  A bare 10-digit NPI is
+    # span-identical to a US phone number; a context-free (or value-only) match
+    # loses the overlap merge to ``phone_us`` and the span is then categorised
+    # ``contact`` instead of ``medical`` — a policy of ``categories: [medical]``
+    # would filter it out and leak.  Spanning the keyword makes the span start
+    # earlier than the phone match, so the medical label wins the merge (the
+    # checksum still validates the digits inside it).
+    "npi": re.compile(r"(?i)\bnpi\b\s*(?:number|no\.?|#|id)?\s*[:=]?\s*[12]\d{9}\b"),
+    "dea_number": re.compile(r"\b[A-Za-z][A-Za-z]\d{7}\b"),
+    # ── Network ───────────────────────────────────────────────────────────
+    "mac_address": re.compile(r"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b"),
     # ── Passwords & secrets in assignments ────────────────────────────────
     "password": re.compile(
         r"(?i)(?:password|passwd|pwd|pass)[\s]*[=:]\s*"
@@ -127,6 +167,18 @@ PATTERNS: dict[str, re.Pattern[str]] = {
 
 _custom_patterns: dict[str, re.Pattern[str]] = {}
 
+# Kinds whose pattern alone would over-match, filtered by a checksum before the
+# span is ever emitted.  This runs at *detection* time on purpose: the optional
+# ``llm_validation`` backend defaults to off, and even the "model" backend
+# auto-keeps regex spans, so a bare 10-digit NPI or 9-digit ABA match must
+# validate itself or it becomes a false-positive generator.
+DETECT_VALIDATORS: dict[str, Callable[[str], bool]] = {
+    "iban": checksums.iban,
+    "npi": checksums.npi,
+    "dea_number": checksums.dea_number,
+    "us_routing_number": checksums.us_routing_number,
+}
+
 
 def load_custom_patterns(path: str) -> None:
     """Load additional regex patterns from a YAML file.
@@ -166,8 +218,15 @@ def detect_regex(text: str) -> list[Span]:
     spans: list[Span] = []
     all_patterns = {**PATTERNS, **_custom_patterns}
     for kind, pattern in all_patterns.items():
+        validator = DETECT_VALIDATORS.get(kind)
         for match in pattern.finditer(text):
             start, end, matched_text = _match_span(match)
+            if validator is not None:
+                try:
+                    if not validator(matched_text):
+                        continue
+                except Exception:
+                    pass  # fail-open: a broken checksum must never unredact
             spans.append(
                 Span(
                     start=start,

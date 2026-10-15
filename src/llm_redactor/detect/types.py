@@ -34,6 +34,7 @@ CATEGORY_MAP: dict[str, str] = {
     "person": "identity",
     "nationality": "identity",
     "employee_id": "identity",
+    "dob": "identity",
     # ── contact ───────────────────────────────────────────────────────────
     "email": "contact",
     "phone": "contact",
@@ -46,11 +47,19 @@ CATEGORY_MAP: dict[str, str] = {
     "ip_v6": "contact",
     # ── government_id ─────────────────────────────────────────────────────
     "ssn": "government_id",
+    "passport_number": "government_id",
+    "ein": "government_id",
     # ── financial ─────────────────────────────────────────────────────────
     "credit_card": "financial",
     "iban": "financial",
+    "us_routing_number": "financial",
+    "us_bank_account": "financial",
+    "crypto_btc": "financial",
+    "crypto_eth": "financial",
     # ── medical ───────────────────────────────────────────────────────────
     "medical_license": "medical",
+    "npi": "medical",
+    "dea_number": "medical",
     # ── temporal ──────────────────────────────────────────────────────────
     "date_time": "temporal",
     # ── credential ────────────────────────────────────────────────────────
@@ -91,6 +100,7 @@ CATEGORY_MAP: dict[str, str] = {
     # ── infrastructure ────────────────────────────────────────────────────
     "connection_string": "infrastructure",
     "hostname_internal": "infrastructure",
+    "mac_address": "infrastructure",
 }
 
 #: Every fine-grained category in the taxonomy.

@@ -438,6 +438,7 @@ policy:
 | **identity** | `person` | NER | Person name |
 | | `nationality` | NER | National, religious, or political group |
 | | `employee_id` | regex | Employee identifier (e.g. `EMP-1234`) |
+| | `dob` | regex | Date of birth (context-anchored) |
 | **contact** | `email` | regex, NER | Email address |
 | | `phone` | NER | Phone number (NER-detected) |
 | | `phone_us` | regex | US phone number |
@@ -448,9 +449,17 @@ policy:
 | | `ip_v4` | regex | IPv4 address |
 | | `ip_v6` | regex | IPv6 address |
 | **government_id** | `ssn` | regex, NER | US Social Security Number |
-| **financial** | `credit_card` | regex, NER | Credit card number |
-| | `iban` | NER | IBAN bank account number |
+| | `passport_number` | regex | Passport number (context-anchored) |
+| | `ein` | regex | US Employer Identification Number (context-anchored) |
+| **financial** | `credit_card` | regex, NER | Credit card number (Luhn-validated) |
+| | `us_routing_number` | regex | US ABA routing number (checksum-validated) |
+| | `us_bank_account` | regex | Bank account number (context-anchored) |
+| | `crypto_btc` | regex | Bitcoin wallet address |
+| | `crypto_eth` | regex | Ethereum wallet address |
+| | `iban` | regex, NER | IBAN bank account number (mod-97 validated) |
 | **medical** | `medical_license` | NER | Medical license number |
+| | `npi` | regex | US National Provider Identifier (checksum-validated) |
+| | `dea_number` | regex | DEA registration number (checksum-validated) |
 | **temporal** | `date_time` | NER | Date or time expression |
 | **credential** | `password` | regex | Password in assignment |
 | | `secret_assignment` | regex | Secret/token/credential in assignment |
@@ -485,6 +494,7 @@ policy:
 | | `pgp_private_key` | regex | PGP private key block |
 | **infrastructure** | `connection_string` | regex | Database / message broker URI |
 | | `hostname_internal` | regex | Internal hostname (`.internal`, `.corp`, etc.) |
+| | `mac_address` | regex | MAC address |
 
 Custom patterns added via `policy.extend_patterns_file` get the
 category `unknown` unless you add them to the `CATEGORY_MAP` in

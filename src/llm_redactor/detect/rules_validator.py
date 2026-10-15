@@ -37,6 +37,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 
+from . import checksums
 from .types import Span
 
 # A validator takes the span's matched text and answers "is this a real,
@@ -60,41 +61,16 @@ def _digits(text: str) -> str:
 
 def _luhn(digits: str) -> bool:
     """Luhn checksum over a digit string (ISO/IEC 7812-1)."""
-    total = 0
-    for i, ch in enumerate(reversed(digits)):
-        d = int(ch)
-        # Double every second digit counting from the rightmost.
-        if i % 2 == 1:
-            d *= 2
-            if d > 9:
-                d -= 9
-        total += d
-    return total % 10 == 0
+    return checksums.luhn(digits)
 
 
 def _credit_card(text: str) -> bool:
-    digits = _digits(text)
-    return 13 <= len(digits) <= 19 and _luhn(digits)
+    return checksums.credit_card(text)
 
 
 def _iban(text: str) -> bool:
-    """ISO 13616 mod-97 check: move the leading country+check digits to the
-    end, map letters to 10-35, and require the whole number ≡ 1 (mod 97)."""
-    s = text.replace(" ", "").replace("-", "").upper()
-    if len(s) < 15 or len(s) > 34 or not s[:2].isalpha() or not s[2:4].isdigit():
-        return False
-    rearranged = s[4:] + s[:4]
-    value = 0
-    for ch in rearranged:
-        if ch.isdigit():
-            value = value * 10 + int(ch)
-        elif "A" <= ch <= "Z":
-            value = value * 100 + (ord(ch) - ord("A") + 10)
-        else:
-            return False
-        # Keep the running modulus small — same result as one big mod at the end.
-        value %= 97
-    return value % 97 == 1
+    """ISO 13616 mod-97 check (implementation in ``checksums``)."""
+    return checksums.iban(text)
 
 
 def _ssn(text: str) -> bool:
@@ -174,6 +150,11 @@ def _register(kinds: tuple[str, ...], rule: Callable[[str], bool]) -> None:
 
 _register(("credit_card",), _credit_card)
 _register(("iban",), _iban)
+# Checksummed kinds are already filtered at detection time; re-registering them
+# here keeps the `rules` backend and detection agreeing by construction.
+_register(("npi",), checksums.npi)
+_register(("dea_number",), checksums.dea_number)
+_register(("us_routing_number",), checksums.us_routing_number)
 _register(("ssn",), _ssn)
 _register(("email",), _email)
 _register(("phone_us",), _phone_us)

@@ -74,3 +74,47 @@ def test_detects_discord_token():
     spans = detect_regex("DISCORD_TOKEN=" + "MTA" + "f" * 50)
     kinds = {s.kind for s in spans}
     assert "discord_token" in kinds
+
+
+def test_detects_valid_iban_only():
+    # Canonical mod-97 example, both spaced and unspaced.
+    assert "iban" in {s.kind for s in detect_regex("GB82 WEST 1234 5698 7654 32")}
+    assert "iban" in {s.kind for s in detect_regex("GB82WEST12345698765432")}
+    # Same shape, corrupted check digits -> rejected at detection time.
+    assert "iban" not in {s.kind for s in detect_regex("GB82 WEST 1234 5698 7654 33")}
+
+
+def test_detects_crypto_wallets():
+    assert "crypto_btc" in {s.kind for s in detect_regex("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2")}
+    assert "crypto_btc" in {
+        s.kind for s in detect_regex("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4")
+    }
+    assert "crypto_eth" in {
+        s.kind for s in detect_regex("0x742d35Cc6634C0532925a3b844Bc454e4438f44e")
+    }
+
+
+def test_detects_npi_only_with_valid_checksum():
+    assert "npi" in {s.kind for s in detect_regex("NPI 1234567893")}
+    assert "npi" not in {s.kind for s in detect_regex("NPI 1234567890")}
+
+
+def test_detects_dea_only_with_valid_checksum():
+    assert "dea_number" in {s.kind for s in detect_regex("DEA AB1234563")}
+    assert "dea_number" not in {s.kind for s in detect_regex("DEA AB1234564")}
+
+
+def test_detects_routing_number_with_context_and_checksum():
+    assert "us_routing_number" in {s.kind for s in detect_regex("routing number 111000025")}
+    assert "us_routing_number" not in {s.kind for s in detect_regex("routing number 111000026")}
+
+
+def test_detects_mac_address():
+    assert "mac_address" in {s.kind for s in detect_regex("nic 00:1A:2B:3C:4D:5E up")}
+
+
+def test_detects_government_and_bank_identifiers_in_context():
+    assert "dob" in {s.kind for s in detect_regex("DOB: 1985-04-12")}
+    assert "passport_number" in {s.kind for s in detect_regex("Passport Number: 123456789")}
+    assert "ein" in {s.kind for s in detect_regex("EIN: 12-3456789")}
+    assert "us_bank_account" in {s.kind for s in detect_regex("Account Number: 000123456789")}
