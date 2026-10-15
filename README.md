@@ -495,6 +495,22 @@ policy:
 | | `heroku_api_key` | regex | Heroku API key (UUID format) |
 | | `telegram_bot_token` | regex | Telegram bot token (`<bot_id>:<secret>`) |
 | | `discord_token` | regex | Discord bot token (`MTA…`) |
+| | `huggingface_token` | regex | Hugging Face token (`hf_…`) |
+| | `digitalocean_token` | regex | DigitalOcean token (`dop_v1_…`) |
+| | `shopify_token` | regex | Shopify access token (`shpat_…`) |
+| | `postman_api_key` | regex | Postman API key (`PMAK-…`) |
+| | `notion_token` | regex | Notion integration token (`secret_…`) |
+| | `hashicorp_vault_token` | regex | HashiCorp Vault token (`hvs.…`) |
+| | `grafana_token` | regex | Grafana service-account token (`glsa_…`) |
+| | `netlify_token` | regex | Netlify personal access token (`nfp_…`) |
+| | `planetscale_token` | regex | PlanetScale service token (`pscale_tkn_…`) |
+| | `sourcegraph_token` | regex | Sourcegraph access token (`sgp_…`) |
+| | `pulumi_token` | regex | Pulumi access token (`pul-…`) |
+| | `new_relic_key` | regex | New Relic user API key (`NRAK-…`) |
+| | `dynatrace_token` | regex | Dynatrace API token (`dt0c01.…`) |
+| | `doppler_token` | regex | Doppler token (`dp.pt.…`) |
+| | `sentry_token` | regex | Sentry org token (`sntrys_…`) |
+| | `replicate_token` | regex | Replicate API token (`r8_…`) |
 | **private_key** | `private_key_pem` | regex | PEM-encoded private key |
 | | `ssh_private_key` | regex | OpenSSH private key |
 | | `pgp_private_key` | regex | PGP private key block |

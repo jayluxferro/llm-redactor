@@ -185,3 +185,45 @@ def test_presidio_map_covers_org_and_shipped_recognisers():
         "MAC_ADDRESS",
     ):
         assert entity in PRESIDIO_KIND_MAP
+
+
+def test_detects_long_tail_vendor_keys():
+    cases = {
+        "huggingface_token": "hf_" + "a" * 34,
+        "digitalocean_token": "dop_v1_" + "a" * 64,
+        "shopify_token": "shpat_" + "a" * 32,
+        "postman_api_key": "PMAK-" + "a" * 24 + "-" + "b" * 34,
+        "hashicorp_vault_token": "hvs." + "a" * 24,
+        "grafana_token": "glsa_" + "a" * 32 + "_" + "b" * 8,
+        "netlify_token": "nfp_" + "a" * 40,
+        "sourcegraph_token": "sgp_" + "a" * 40,
+        "pulumi_token": "pul-" + "a" * 40,
+        "new_relic_key": "NRAK-" + "A" * 27,
+        "replicate_token": "r8_" + "a" * 37,
+    }
+    for kind, value in cases.items():
+        assert kind in {s.kind for s in detect_regex(f"token={value}")}, kind
+
+
+def test_long_tail_vendor_keys_are_in_the_taxonomy():
+    from llm_redactor.detect.types import CATEGORY_MAP
+
+    for kind in (
+        "huggingface_token",
+        "digitalocean_token",
+        "shopify_token",
+        "postman_api_key",
+        "notion_token",
+        "hashicorp_vault_token",
+        "grafana_token",
+        "netlify_token",
+        "planetscale_token",
+        "sourcegraph_token",
+        "pulumi_token",
+        "new_relic_key",
+        "dynatrace_token",
+        "doppler_token",
+        "sentry_token",
+        "replicate_token",
+    ):
+        assert CATEGORY_MAP.get(kind) == "vendor_api_key", kind

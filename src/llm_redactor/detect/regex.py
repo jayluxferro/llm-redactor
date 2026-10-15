@@ -156,6 +156,24 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     ),
     "telegram_bot_token": re.compile(r"\b\d{5,12}:[A-Za-z0-9_-]{30,}\b"),
     "discord_token": re.compile(r"\bMTA[0-9A-Za-z_-]{20,}\b"),
+    # Long-tail vendor keys with distinctive prefixes (low false-positive risk:
+    # each requires its full vendor prefix and expected length).
+    "huggingface_token": re.compile(r"\bhf_[A-Za-z0-9]{34,}\b"),
+    "digitalocean_token": re.compile(r"\bdo[opr]_v1_[a-f0-9]{64}\b"),
+    "shopify_token": re.compile(r"\bshp(?:at|ca|pa|ss)_[a-f0-9]{32}\b"),
+    "postman_api_key": re.compile(r"\bPMAK-[a-f0-9]{24}-[a-f0-9]{34}\b"),
+    "notion_token": re.compile(r"\b(?:secret_|ntn_)[A-Za-z0-9]{40,}\b"),
+    "hashicorp_vault_token": re.compile(r"\bhv[bs]\.[A-Za-z0-9_-]{24,}\b"),
+    "grafana_token": re.compile(r"\bglsa_[A-Za-z0-9]{32}_[a-f0-9]{8}\b"),
+    "netlify_token": re.compile(r"\bnfp_[A-Za-z0-9]{40}\b"),
+    "planetscale_token": re.compile(r"\bpscale_tkn_[A-Za-z0-9_-]{40,}\b"),
+    "sourcegraph_token": re.compile(r"\bsgp_[a-f0-9]{40}\b"),
+    "pulumi_token": re.compile(r"\bpul-[a-f0-9]{40}\b"),
+    "new_relic_key": re.compile(r"\bNRAK-[A-Z0-9]{27}\b"),
+    "dynatrace_token": re.compile(r"\bdt0c01\.[A-Z0-9]{24}\.[A-Z0-9]{64}\b"),
+    "doppler_token": re.compile(r"\bdp\.(?:pt|st|sa)\.[A-Za-z0-9]{40,}\b"),
+    "sentry_token": re.compile(r"\bsntrys_[A-Za-z0-9]{40,}\b"),
+    "replicate_token": re.compile(r"\br8_[A-Za-z0-9]{37,}\b"),
     # ── Generic patterns ──────────────────────────────────────────────────
     "generic_api_key": re.compile(
         r"(?i)['\"]?(?:api[_\-]?key|apikey|secret[_\-]?key|access[_\-]?token|auth[_\-]?token|key)"
