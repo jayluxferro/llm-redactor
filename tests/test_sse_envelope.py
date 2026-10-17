@@ -605,8 +605,15 @@ def test_raw_passthrough_count_tokens(httpx_mock: Any) -> None:
 
 
 def test_raw_passthrough_upstream_error_is_typed(httpx_mock: Any, caplog: Any) -> None:
-    """Catch-all: a mocked ConnectError yields the typed 502, not a bare 500."""
+    """Catch-all: a mocked ConnectError yields the typed 502, not a bare 500.
+
+    Registered three times on purpose: a transport failure is now retried
+    (bounded, ``LLM_REDACTOR_UPSTREAM_RETRIES``, default 2), so the final
+    answer is still produced by the last attempt.
+    """
     httpx_mock.add_exception(httpx.ConnectError(""))  # str() is EMPTY
+    httpx_mock.add_exception(httpx.ConnectError(""))
+    httpx_mock.add_exception(httpx.ConnectError(""))
     c = _client()
     with caplog.at_level(logging.WARNING, logger="llm_redactor.transport.http_proxy"):
         resp = c.post(

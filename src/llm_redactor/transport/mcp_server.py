@@ -33,6 +33,7 @@ from ..detect.types import Span, filter_by_categories
 from ..observability import log_event
 from ..redact.placeholder import PlaceholderGenerator, redact
 from ..redact.restore import restore
+from ..retry import retry_upstream
 
 server = Server("llm-redactor")
 _config: Config | None = None
@@ -291,7 +292,13 @@ async def _handle_llm_chat(arguments: dict[str, Any]) -> list[TextContent]:
 
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(url, json=body, headers=headers)
+            # Retry the *already redacted* body only: redaction above already
+            # ran once, so re-sending cannot double-redact, and the retry log
+            # carries the exception type only — never the messages.
+            resp = await retry_upstream(
+                lambda: client.post(url, json=body, headers=headers),
+                operation="mcp llm.chat",
+            )
             resp.raise_for_status()
             cloud_response = resp.json()
     except Exception as e:

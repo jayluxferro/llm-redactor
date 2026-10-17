@@ -37,6 +37,7 @@ from ..redact.raw_surgery import (
     restore_response_bytes,
 )
 from ..redact.restore import restore
+from ..retry import retry_upstream
 from ..transport.cloud import (
     DEFAULT_UPSTREAM_TIMEOUT,
     StreamResult,
@@ -1143,7 +1144,14 @@ async def raw_passthrough(request: Request, path: str) -> Response:
             limits=httpx.Limits(keepalive_expiry=2.0),
             timeout=DEFAULT_UPSTREAM_TIMEOUT,
         ) as client:
-            resp = await client.request(request.method, url, content=raw, headers=headers)
+            # Pre-commit raw passthrough: the full body is read before the
+            # response is built, so a transient transport failure may be
+            # re-sent.  `raw` is forwarded verbatim — the retry re-sends the
+            # same bytes and never re-runs redaction.
+            resp = await retry_upstream(
+                lambda: client.request(request.method, url, content=raw, headers=headers),
+                operation="raw passthrough",
+            )
     except httpx.HTTPError as e:
         return _upstream_transport_error(e, config.cloud_target)
 

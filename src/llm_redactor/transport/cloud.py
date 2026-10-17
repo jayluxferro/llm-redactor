@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 from ..config import CloudTargetConfig
+from ..retry import retry_upstream
 
 # Structured upstream timeout. A single flat float applies the same deadline
 # to connect, read, write, and pool — a non-streaming LLM call that takes
@@ -116,7 +117,15 @@ async def forward_chat_completion(
     # The caller's user-agent (if any) stays in the request headers so the
     # shared client never has to hold per-request state; when absent, httpx
     # supplies its own default, exactly as before.
-    resp = await get_client().post(url, json=body, headers=headers, timeout=timeout)
+    #
+    # Retry: safe here — nothing has been handed back to the client yet, and
+    # `body` is the *already redacted* request, so re-sending cannot
+    # double-redact.  A non-2xx response is a real answer and raises below,
+    # outside the retried region, so status errors are never re-sent.
+    resp = await retry_upstream(
+        lambda: get_client().post(url, json=body, headers=headers, timeout=timeout),
+        operation="openai chat completion",
+    )
     resp.raise_for_status()
     return _parse_json_response(resp, url)
 
@@ -203,6 +212,24 @@ def _stream_response(resp: httpx.Response) -> AsyncIterator[bytes]:
     return gen()
 
 
+async def _send_streaming_preflight(
+    req_factory: Callable[[httpx.AsyncClient], httpx.Request], *, operation: str
+) -> httpx.Response:
+    """Send a streaming request, retrying only before any byte is consumed.
+
+    ``client.send(stream=True)`` resolves as soon as the response headers
+    arrive; a failure here means the stream was never opened, so no byte
+    reached the downstream client and re-sending the same (already redacted)
+    request is safe.  A failure *after* this point belongs to the caller's
+    stream gate, which emits exactly one terminal frame and never retries.
+    """
+    client = get_client()
+    return await retry_upstream(
+        lambda: client.send(req_factory(client), stream=True),
+        operation=operation,
+    )
+
+
 async def forward_chat_completion_stream(
     body: dict[str, Any],
     config: CloudTargetConfig,
@@ -216,9 +243,10 @@ async def forward_chat_completion_stream(
     response (for non-2xx or non-SSE upstreams) or an iterator of raw SSE
     chunks.  The caller commits to ``text/event-stream`` only after this check.
     """
-    client = get_client()
-    req = _build_openai_request(client, body, config, upstream_headers, timeout=timeout)
-    resp = await client.send(req, stream=True)
+    resp = await _send_streaming_preflight(
+        lambda c: _build_openai_request(c, body, config, upstream_headers, timeout=timeout),
+        operation="openai chat completion stream",
+    )
     content_type = resp.headers.get("content-type")
     if resp.status_code >= 400 or "text/event-stream" not in (content_type or ""):
         body_bytes = await _close_on_error(resp)
@@ -260,7 +288,13 @@ async def forward_anthropic_messages(
     if api_key and "x-api-key" not in headers and "authorization" not in headers:
         headers["x-api-key"] = api_key
 
-    resp = await get_client().post(url, json=body, headers=headers, timeout=timeout)
+    # Same retry rationale as forward_chat_completion: `body` is already
+    # redacted, nothing has been returned downstream, and status errors are
+    # raised outside the retried region.
+    resp = await retry_upstream(
+        lambda: get_client().post(url, json=body, headers=headers, timeout=timeout),
+        operation="anthropic messages",
+    )
     resp.raise_for_status()
     return _parse_json_response(resp, url)
 
@@ -290,7 +324,13 @@ async def forward_anthropic_raw(
     if api_key and "x-api-key" not in headers and "authorization" not in headers:
         headers["x-api-key"] = api_key
 
-    resp = await get_client().post(url, content=body_bytes, headers=headers, timeout=timeout)
+    # The bytes are already redacted (surgically, for signed blocks) and are
+    # re-sent verbatim on retry — redaction is not re-run, so nothing can be
+    # double-redacted or re-encoded.
+    resp = await retry_upstream(
+        lambda: get_client().post(url, content=body_bytes, headers=headers, timeout=timeout),
+        operation="anthropic raw messages",
+    )
     return resp.content, resp.status_code, dict(resp.headers)
 
 
@@ -302,11 +342,12 @@ async def forward_anthropic_raw_stream(
     upstream_headers: dict[str, str] | None = None,
 ) -> StreamResult:
     """Stream variant of :func:`forward_anthropic_raw` with Gate 1 preflight."""
-    client = get_client()
-    req = _build_anthropic_request(
-        client, config, content=body_bytes, upstream_headers=upstream_headers, timeout=timeout
+    resp = await _send_streaming_preflight(
+        lambda c: _build_anthropic_request(
+            c, config, content=body_bytes, upstream_headers=upstream_headers, timeout=timeout
+        ),
+        operation="anthropic raw messages stream",
     )
-    resp = await client.send(req, stream=True)
     content_type = resp.headers.get("content-type")
     if resp.status_code >= 400 or "text/event-stream" not in (content_type or ""):
         body_bytes = await _close_on_error(resp)
@@ -332,11 +373,12 @@ async def forward_anthropic_messages_stream(
     upstream_headers: dict[str, str] | None = None,
 ) -> StreamResult:
     """Forward a streaming Anthropic Messages request with Gate 1 preflight."""
-    client = get_client()
-    req = _build_anthropic_request(
-        client, config, json=body, upstream_headers=upstream_headers, timeout=timeout
+    resp = await _send_streaming_preflight(
+        lambda c: _build_anthropic_request(
+            c, config, json=body, upstream_headers=upstream_headers, timeout=timeout
+        ),
+        operation="anthropic messages stream",
     )
-    resp = await client.send(req, stream=True)
     content_type = resp.headers.get("content-type")
     if resp.status_code >= 400 or "text/event-stream" not in (content_type or ""):
         body_bytes = await _close_on_error(resp)
