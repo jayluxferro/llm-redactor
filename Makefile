@@ -1,4 +1,4 @@
-.PHONY: paper arxiv clean test figures lint format-check install-hooks
+.PHONY: paper arxiv clean test figures lint format-check install-hooks eval
 
 PAPER_DIR  := paper
 ARXIV_DIR  := arxiv_submission
@@ -40,13 +40,13 @@ figures:
 # --- Tests ---
 
 test:
-	uv run pytest -v
+	uv run --extra dev pytest -v
 
 lint:
-	uv run ruff check src tests evals tools
+	uv run --extra dev ruff check src tests evals tools
 
 format-check:
-	uv run ruff format --check src tests evals tools
+	uv run --extra dev ruff format --check src tests evals tools
 
 install-hooks:
 	git config core.hooksPath .githooks
@@ -59,8 +59,11 @@ eval:
 
 # --- Clean ---
 
+# No {a,b} brace expansion below: make runs recipes with /bin/sh, which is
+# dash on Ubuntu, and dash passed the braces through literally (nothing was
+# removed).
 clean:
 	rm -rf $(ARXIV_DIR) $(ARXIV_ZIP)
-	rm -f $(PAPER_DIR)/paper.{aux,bbl,blg,log,out,pdf,fls,fdb_latexmk,synctex.gz}
+	rm -f $(addprefix $(PAPER_DIR)/paper.,aux bbl blg log out pdf fls fdb_latexmk synctex.gz)
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	rm -rf .pytest_cache

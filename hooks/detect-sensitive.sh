@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# Claude Code pre-tool hook: warn if tool input contains sensitive content.
+# Claude Code PreToolUse hook: BLOCK a tool call whose input contains
+# sensitive content.
 #
-# Reads the tool input from stdin (JSON with tool_name and tool_input),
-# runs a quick regex scan for common PII/secret patterns, and exits
-# non-zero with a warning if anything is found.
+# Reads the hook payload from stdin (JSON with tool_name and tool_input),
+# runs a quick regex scan for common PII/secret patterns, and exits 2 with
+# the findings on stderr if anything matches.  Exit 2 blocks the call and
+# shows stderr to Claude; to warn without blocking, change `exit 2` to
+# `exit 0` (stderr is then only visible in the transcript).
 #
 # Install in ~/.claude/settings.json:
 #   {
@@ -21,32 +24,33 @@
 #       ]
 #     }
 #   }
+#
+# This is a deliberately small pattern set (no Python package needed).  For
+# the full detector, use `llm-redactor detect` or the MCP redact.* tools.
 
 set -euo pipefail
 
 # Read tool input from stdin.
 INPUT=$(cat)
 
-# Extract the text content to scan (tool_input as string).
-TEXT=$(echo "$INPUT" | python3 -c "
-import sys, json
+# Every string anywhere inside tool_input, one per line (nested dicts and
+# lists included; the old flattening only saw top-level values).
+TEXT=$(printf '%s' "$INPUT" | python3 -c "
+import json, sys
+
+def walk(value):
+    if isinstance(value, str):
+        print(value)
+    elif isinstance(value, dict):
+        for v in value.values():
+            walk(v)
+    elif isinstance(value, list):
+        for v in value:
+            walk(v)
+
 try:
-    d = json.load(sys.stdin)
-    # Flatten all string values from tool_input.
-    ti = d.get('tool_input', {})
-    if isinstance(ti, str):
-        print(ti)
-    elif isinstance(ti, dict):
-        for v in ti.values():
-            if isinstance(v, str):
-                print(v)
-            elif isinstance(v, list):
-                for item in v:
-                    if isinstance(item, dict):
-                        for sv in item.values():
-                            if isinstance(sv, str):
-                                print(sv)
-except:
+    walk(json.load(sys.stdin).get('tool_input', {}))
+except Exception:
     pass
 " 2>/dev/null)
 
@@ -54,44 +58,44 @@ if [ -z "$TEXT" ]; then
     exit 0
 fi
 
-# Quick regex scan for common sensitive patterns.
+# Quick regex scan.  Here-strings, not `echo | grep -q`: under pipefail a
+# grep that exits on the first match SIGPIPEs the echo on large inputs, and
+# the pipeline then reports failure, i.e. the match is silently dropped.
+# `-e` before each pattern: a pattern starting with "-" is otherwise parsed
+# as an option (the PEM check never fired because of exactly that).
 FINDINGS=""
 
-# Email addresses
-if echo "$TEXT" | grep -qiE '[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}'; then
+if grep -qiE -e '[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}' <<<"$TEXT"; then
     FINDINGS="${FINDINGS}  - Email address detected\n"
 fi
 
-# API keys / secrets in assignments
-if echo "$TEXT" | grep -qiE '(api[_-]?key|secret[_-]?key|access[_-]?token|password|passwd)\s*[=:]\s*\S{8,}'; then
+if grep -qiE -e '(api[_-]?key|secret[_-]?key|access[_-]?token|password|passwd)\s*[=:]\s*\S{8,}' <<<"$TEXT"; then
     FINDINGS="${FINDINGS}  - API key or secret in assignment\n"
 fi
 
-# AWS access keys
-if echo "$TEXT" | grep -qE 'AKIA[0-9A-Z]{16}'; then
+if grep -qE -e 'AKIA[0-9A-Z]{16}' <<<"$TEXT"; then
     FINDINGS="${FINDINGS}  - AWS access key detected\n"
 fi
 
-# Bearer tokens
-if echo "$TEXT" | grep -qiE 'bearer\s+[a-z0-9._-]{20,}'; then
+if grep -qiE -e 'bearer\s+[a-z0-9._-]{20,}' <<<"$TEXT"; then
     FINDINGS="${FINDINGS}  - Bearer token detected\n"
 fi
 
-# PEM private keys
-if echo "$TEXT" | grep -qE '-----BEGIN.*PRIVATE KEY-----'; then
+if grep -qE -e '-----BEGIN.*PRIVATE KEY-----' <<<"$TEXT"; then
     FINDINGS="${FINDINGS}  - Private key detected\n"
 fi
 
-# SSN pattern
-if echo "$TEXT" | grep -qE '\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b'; then
+if grep -qE -e '\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b' <<<"$TEXT"; then
     FINDINGS="${FINDINGS}  - SSN pattern detected\n"
 fi
 
 if [ -n "$FINDINGS" ]; then
-    echo "⚠ llm-redactor: Sensitive content detected in tool input:"
-    echo -e "$FINDINGS"
-    echo "Consider using redact.scrub or the llm.chat tool instead."
-    # Exit 2 = block with message (Claude Code hook protocol).
+    # stderr: on exit 2 Claude Code feeds stderr (not stdout) back to Claude.
+    {
+        echo "⚠ llm-redactor: Sensitive content detected in tool input:"
+        printf '%b' "$FINDINGS"
+        echo "Consider using redact.scrub or the llm.chat tool instead."
+    } >&2
     exit 2
 fi
 
