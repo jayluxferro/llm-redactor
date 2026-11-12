@@ -30,6 +30,9 @@ Intentionally NOT ruled (documented so gaps don't look like oversights):
 - ``bearer_token`` / ``basic_auth`` / ``password`` / ``secret_assignment`` —
   opaque values whose regex already encodes the length floor; dropping
   aggressively here risks leaking real credentials.
+- ``crypto_*`` kinds — ``detect/wallets.py`` already decoded and
+  checksum-verified every span before emitting it; a second pass would only
+  repeat the same arithmetic.
 """
 
 from __future__ import annotations

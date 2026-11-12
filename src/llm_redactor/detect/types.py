@@ -58,9 +58,30 @@ CATEGORY_MAP: dict[str, str] = {
     "iban": "financial",
     "us_routing_number": "financial",
     "us_bank_account": "financial",
+    # Blockchain addresses and public keys (detect/wallets.py).  Not secrets,
+    # but each one links a person to their full on-chain history, so they sit
+    # with the other financial identifiers.  Private keys, xprvs and seed
+    # phrases are under private_key below.
     "crypto_btc": "financial",
     "crypto_eth": "financial",
-    "crypto_wallet": "financial",
+    "crypto_ltc": "financial",
+    "crypto_doge": "financial",
+    "crypto_bch": "financial",
+    "crypto_trx": "financial",
+    "crypto_xrp": "financial",
+    "crypto_sol": "financial",
+    "crypto_xmr": "financial",
+    "crypto_ada": "financial",
+    "crypto_dot": "financial",
+    "crypto_cosmos": "financial",
+    "crypto_xlm": "financial",
+    "crypto_algo": "financial",
+    "crypto_xtz": "financial",
+    "crypto_lightning": "financial",
+    "crypto_address": "financial",
+    "crypto_xpub": "financial",
+    "crypto_public_key": "financial",
+    "crypto_wallet": "financial",  # Presidio's CRYPTO recogniser (Bitcoin only)
     # ── medical ───────────────────────────────────────────────────────────
     "medical_license": "medical",
     "npi": "medical",
@@ -119,6 +140,9 @@ CATEGORY_MAP: dict[str, str] = {
     "private_key_pem": "private_key",
     "ssh_private_key": "private_key",
     "pgp_private_key": "private_key",
+    "crypto_private_key": "private_key",  # hex-in-context, WIF, Solana, XRP, Stellar, ...
+    "crypto_xprv": "private_key",  # BIP32 extended private key
+    "crypto_mnemonic": "private_key",  # BIP-39 seed phrase
     # ── infrastructure ────────────────────────────────────────────────────
     "connection_string": "infrastructure",
     "hostname_internal": "infrastructure",

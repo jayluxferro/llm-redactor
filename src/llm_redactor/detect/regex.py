@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 
-from . import checksums
+from . import checksums, wallets
 from .types import Span
 
 # ---------------------------------------------------------------------------
@@ -66,7 +66,9 @@ PATTERNS: dict[str, re.Pattern[str]] = {
         r"(?i)(?:date\s+of\s+birth|d\.?o\.?b\.?|birth\s*date|born(?:\s+on)?)"
         r"\s*[:=]?\s*(\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4})"
     ),
-    # ── Financial: bank accounts & crypto wallets ─────────────────────────
+    # ── Financial: bank accounts ──────────────────────────────────────────
+    # (Blockchain addresses, keys and seed phrases live in wallets.py: they
+    # are told apart by decoding, which a single regex per kind cannot do.)
     "iban": re.compile(r"\b[A-Z]{2}\d{2}(?:[ ]?[A-Z0-9]{1,4}){3,8}\b"),
     "us_routing_number": re.compile(
         r"(?i)(?:routing|aba|rtn)\s*(?:number|no\.?|#)?\s*[:=]?\s*(\d{9})"
@@ -74,10 +76,6 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     "us_bank_account": re.compile(
         r"(?i)(?:account|acct)\s*(?:number|no\.?|#)\s*[:=]?\s*(\d{6,17})"
     ),
-    # Wallet addresses are unrecoverable if leaked (transfers are final), so
-    # they are treated as critical even though they are not "identity" data.
-    "crypto_btc": re.compile(r"\b(?:bc1[a-z0-9]{25,62}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})\b"),
-    "crypto_eth": re.compile(r"\b0x[a-fA-F0-9]{40}\b"),
     # ── Medical identifiers (checksum-validated at detection time) ────────
     # Context-anchored AND keyword-inclusive on purpose.  A bare 10-digit NPI is
     # span-identical to a US phone number; a context-free (or value-only) match
@@ -115,7 +113,10 @@ PATTERNS: dict[str, re.Pattern[str]] = {
         # `secret_key     <value>` with no `=` at all.  The value itself may
         # contain `=` (base64 padding), so it has to be matched whole.
         r"(?:[^=]{0,40}[=:]|[^\S\n]*)"
-        r"\s*['\"]?([A-Za-z0-9/+=]{40})['\"]?"
+        # Exactly 40: without the look-ahead this took the first 40 chars of
+        # ANY longer token after "key" (a 64-hex wallet key, a long API token),
+        # producing a partial span with the wrong label.
+        r"\s*['\"]?([A-Za-z0-9/+=]{40})(?![A-Za-z0-9/+=])['\"]?"
     ),
     "aws_session_token": re.compile(
         r"(?i)aws[_\-]?session[_\-]?token[\s]*[=:]\s*['\"]?([A-Za-z0-9/+=]{100,})['\"]?"
@@ -182,10 +183,14 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     "bearer_token": re.compile(r"(?i)bearer\s+[A-Za-z0-9\-_.~+/]{20,}=*"),
     "basic_auth": re.compile(r"(?i)basic\s+[A-Za-z0-9+/]{20,}={0,2}"),
     "jwt": re.compile(r"\beyJ[A-Za-z0-9\-_]+\.eyJ[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_.+/=]+\b"),
+    # Any "<LABEL> PRIVATE KEY" armor: PKCS#1/#8 (RSA, EC, DSA, ENCRYPTED),
+    # ED25519, and vendor armors such as the Cosmos SDK's TENDERMINT key
+    # export, which the old fixed label list let through.  OpenSSH has its own
+    # kind below.  No capture groups: _match_span would redact only the group.
     "private_key_pem": re.compile(
-        r"-----BEGIN (?:RSA |EC |DSA |ED25519 |ENCRYPTED )?PRIVATE KEY-----"
+        r"-----BEGIN (?!OPENSSH )(?:[A-Z0-9]+ )*PRIVATE KEY-----"
         r".*?"
-        r"-----END (?:RSA |EC |DSA |ED25519 |ENCRYPTED )?PRIVATE KEY-----",
+        r"-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----",
         re.DOTALL,
     ),
     "ssh_private_key": re.compile(
@@ -258,7 +263,10 @@ def _match_span(match: re.Match[str]) -> tuple[int, int, str]:
 
 def detect_regex(text: str) -> list[Span]:
     """Run all regex patterns against text and return detected spans."""
-    spans: list[Span] = []
+    # Wallet spans go first on purpose: the overlap merge keeps the earlier of
+    # two identical spans, and ``PRIVATE_KEY=<hex>`` also matches the generic
+    # key pattern; the specific label is the more useful one to keep.
+    spans: list[Span] = wallets.detect_wallets(text)
     all_patterns = {**PATTERNS, **_custom_patterns}
     for kind, pattern in all_patterns.items():
         validator = DETECT_VALIDATORS.get(kind)

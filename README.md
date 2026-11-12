@@ -458,9 +458,18 @@ policy:
 | **financial** | `credit_card` | regex, NER | Credit card number (Luhn-validated) |
 | | `us_routing_number` | regex | US ABA routing number (checksum-validated) |
 | | `us_bank_account` | regex | Bank account number (context-anchored) |
-| | `crypto_btc` | regex | Bitcoin wallet address |
-| | `crypto_eth` | regex | Ethereum wallet address |
-| | `crypto_wallet` | NER | Crypto wallet address (Presidio) |
+| | `crypto_btc` | regex | Bitcoin address: legacy, P2SH, bech32, taproot, testnet (checksum-validated) |
+| | `crypto_eth` | regex | EVM address `0x` + 40 hex (Ethereum, Polygon, BSC, Arbitrum, Base, …) |
+| | `crypto_ltc` / `crypto_doge` / `crypto_bch` | regex | Litecoin, Dogecoin, Bitcoin Cash (CashAddr) addresses (checksum-validated) |
+| | `crypto_trx` / `crypto_xrp` / `crypto_xtz` | regex | Tron, XRP (classic + X-address), Tezos addresses (checksum-validated) |
+| | `crypto_sol` | regex | Solana address (no checksum exists; shape + decoding heuristics) |
+| | `crypto_xmr` / `crypto_ada` / `crypto_dot` | regex | Monero, Cardano (Shelley + Byron), Polkadot/Kusama/Substrate SS58 |
+| | `crypto_cosmos` / `crypto_xlm` / `crypto_algo` | regex | Cosmos-SDK bech32 (cosmos, osmo, …), Stellar, Algorand (checksum-validated) |
+| | `crypto_lightning` | regex | Lightning BOLT11 invoice / LNURL |
+| | `crypto_address` | regex | Checksum-valid address of a chain not listed above |
+| | `crypto_xpub` | regex | BIP32 extended public key (xpub/ypub/zpub/tpub/…): reveals every wallet address |
+| | `crypto_public_key` | regex | secp256k1 hex public key (on-curve check), Tezos/Cardano/Cosmos/Nostr public keys, Ethereum validator (BLS) key |
+| | `crypto_wallet` | NER | Crypto wallet address (Presidio, Bitcoin only) |
 | | `iban` | regex, NER | IBAN bank account number (mod-97 validated) |
 | **medical** | `medical_license` | NER | Medical license number |
 | | `npi` | regex | US National Provider Identifier (checksum-validated) |
@@ -511,12 +520,40 @@ policy:
 | | `doppler_token` | regex | Doppler token (`dp.pt.…`) |
 | | `sentry_token` | regex | Sentry org token (`sntrys_…`) |
 | | `replicate_token` | regex | Replicate API token (`r8_…`) |
-| **private_key** | `private_key_pem` | regex | PEM-encoded private key |
+| **private_key** | `private_key_pem` | regex | PEM-armored private key (any label, incl. Cosmos `TENDERMINT`) |
 | | `ssh_private_key` | regex | OpenSSH private key |
 | | `pgp_private_key` | regex | PGP private key block |
+| | `crypto_private_key` | regex | Wallet private key: WIF, BIP38, hex near a "private key"-style keyword, Solana/NEAR keypair (JSON array or base58, verified), XRP/Stellar seeds, Tezos/Cardano/Sui/Nostr secret keys |
+| | `crypto_xprv` | regex | BIP32 extended private key (xprv/yprv/zprv/tprv/…) |
+| | `crypto_mnemonic` | regex | BIP-39 seed phrase (12–24 English words; also Algorand 25-word) |
 | **infrastructure** | `connection_string` | regex | Database / message broker URI |
 | | `hostname_internal` | regex | Internal hostname (`.internal`, `.corp`, etc.) |
 | | `mac_address` | regex | MAC address |
+
+### Blockchain keys, addresses and seed phrases
+
+`detect/wallets.py` decodes each candidate token and lets the bytes pick the
+kind, so the same base58 string is told apart as a Bitcoin address, an XRP
+seed or a Solana key. Most formats carry their own checksum (Base58Check,
+bech32/bech32m, CashAddr, SS58, Stellar CRC-16, Algorand), which keeps false
+positives near zero. Limits worth knowing:
+
+- **Mistyped addresses are not redacted.** A checksum failure means "not an
+  address". A one-character typo is still one search away from the real value.
+- **A bare `0x` + 64-hex value is not redacted** unless a keyword like
+  `private key`, `PRIVATE_KEY`, `--private-key`, `secret`, `seed`,
+  `accounts: [` or `new Wallet(` appears within 200 characters. Without
+  context it is indistinguishable from a tx hash or a SHA-256 digest.
+- **Seed phrases** must be at least 12 consecutive BIP-39 English words
+  with at least 10 distinct words in some 12-word window. This keeps out
+  repetitive code like `(False,), (True,)` tables. The public zero-entropy
+  test vector (`abandon` ×11 + `about`) is deliberately not redacted. Other
+  languages' wordlists are not supported.
+- **Solana addresses** have no checksum: 32–44 char base58 that decodes to
+  exactly 32 bytes. camelCase identifiers and fragments of base64 blobs are
+  excluded. A short allowlist of public program IDs, mints and EVM
+  infrastructure contracts (zero address, WETH, USDC, Multicall3, …) passes
+  through unredacted.
 
 Custom patterns added via `policy.extend_patterns_file` get the
 category `unknown` unless you add them to the `CATEGORY_MAP` in
