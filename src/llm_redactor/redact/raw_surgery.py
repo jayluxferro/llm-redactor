@@ -8,12 +8,14 @@ the raw bytes directly, leaving signed regions byte-identical.  The same
 machinery restores placeholders in raw responses without touching signed
 content there either.
 
-Scope rules mirror the non-signed Anthropic path in ``transport/http_proxy``:
-only ``messages[*].content`` string values and the ``text`` field of ``text``
-content blocks are redacted.  ``thinking`` / ``redacted_thinking`` blocks and
-``signature`` fields are never modified.  Placeholders that leak into signed
-thinking content are deliberately left in place — mutating them would break
-the signature on the client's next turn.
+Scope rules mirror the non-signed Anthropic path in ``transport/http_proxy``
+(``_redact_anthropic_body``): ``system`` text, ``messages[*].content`` strings,
+``text`` blocks, ``tool_result`` content (string or text blocks), every
+string inside a ``tool_use`` input, and text ``document`` sources.
+``thinking`` / ``redacted_thinking`` blocks and ``signature`` fields are never
+modified.  Placeholders that leak into signed thinking content are
+deliberately left in place — mutating them would break the signature on the
+client's next turn.
 """
 
 from __future__ import annotations
@@ -26,13 +28,12 @@ from ..detect.types import Span
 from ..observability import log_event
 from .placeholder import PREFIX as PH_PREFIX
 from .placeholder import SUFFIX as PH_SUFFIX
+from .restore import MAX_PLACEHOLDER_LEN, StreamRestorer
+
+__all__ = ["MAX_PLACEHOLDER_LEN"]  # re-exported: older callers import it from here
 
 PROTECTED_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking"})
 PROTECTED_KEYS = frozenset({"signature"})
-
-# Placeholders are ⟨KIND_N·tag⟩ — short by construction.  A held span longer
-# than this in the streaming restorer cannot be a placeholder.
-MAX_PLACEHOLDER_LEN = 128
 
 
 class SurgeryError(ValueError):
@@ -318,23 +319,41 @@ def insert_fields(raw: bytes, ops: list[InsertOp]) -> bytes:
     return out
 
 
-def _is_redactable(token: StringToken) -> bool:
-    """Mirror of the non-signed path's redaction scope."""
+def _block_types(tokens: list[StringToken]) -> dict[tuple[object, ...], str]:
+    """``type`` of every object, keyed by the object's path."""
+    return {t.path[:-1]: t.value for t in tokens if t.path and t.path[-1] == "type"}
+
+
+def _is_redactable(token: StringToken, types: dict[tuple[object, ...], str]) -> bool:
+    """Mirror of the non-signed path's redaction scope (``_redact_anthropic_body``).
+
+    Paths are matched structurally; ``types`` maps an object's path to its
+    ``type`` field so a nested string can ask what block it lives in.
+    """
     if token.protected or not token.value:
         return False
     p = token.path
-    if len(p) == 3 and p[0] == "messages" and isinstance(p[1], int) and p[2] == "content":
+    if p == ("system",):
         return True
-    if (
-        len(p) == 5
-        and p[0] == "messages"
-        and isinstance(p[1], int)
-        and p[2] == "content"
-        and isinstance(p[3], int)
-        and p[4] == "text"
-        and token.block_type == "text"
-    ):
-        return True
+    if len(p) == 3 and p[0] == "system" and p[2] == "text":
+        return types.get(p[:2]) == "text"
+    if len(p) < 3 or p[0] != "messages" or p[2] != "content":
+        return False
+    if len(p) == 3:
+        return True  # messages[i].content as a plain string
+    block = types.get(p[:4])
+    rest = p[4:]
+    if block == "text":
+        return rest == ("text",)
+    if block == "tool_result":
+        # content as a string, or as a list of text blocks
+        if rest == ("content",):
+            return True
+        return len(rest) == 3 and rest[::2] == ("content", "text") and types.get(p[:6]) == "text"
+    if block == "tool_use":
+        return bool(rest) and rest[0] == "input"  # any string inside the input
+    if block == "document":
+        return rest == ("source", "data") and types.get((*p[:4], "source")) == "text"
     return False
 
 
@@ -432,9 +451,10 @@ async def redact_signed_request(
     """
     result = RawRedaction(new_raw=raw)
     tokens = index_string_tokens(raw)
+    types = _block_types(tokens)
     ops: list[_Op] = []
     for tok in tokens:
-        if not _is_redactable(tok):
+        if not _is_redactable(tok, types):
             continue
         spans = await detect_spans(tok.value)
         if not spans:
@@ -546,19 +566,38 @@ def restore_response_bytes(raw: bytes, reverse_map: dict[str, str]) -> bytes:
         return raw
 
 
-class SSETextRestorer:
-    """Restore placeholders across Anthropic SSE ``text_delta`` events.
+# Delta types whose payload is model output we may rewrite, and the field
+# carrying it.  ``input_json_delta`` is a fragment of a tool call's JSON input,
+# so originals spliced into it must be JSON-escaped (``_json_fragment``).
+_DELTA_FIELDS = {"text_delta": "text", "input_json_delta": "partial_json"}
 
-    Only ``content_block_delta`` events carrying a ``text_delta`` are rewritten
-    (they carry no signatures); every other event — including
-    ``thinking_delta`` / ``signature_delta`` — passes through untouched.  A
-    placeholder split across deltas is held back until it completes.
+
+def _json_fragment(text: str) -> str:
+    return json.dumps(text, ensure_ascii=False)[1:-1]
+
+
+class SSETextRestorer:
+    """Restore placeholders across Anthropic SSE content deltas.
+
+    ``text_delta`` text and ``input_json_delta`` partial JSON are rewritten
+    (tool calls carry placeholders too: a model asked to edit a file that
+    contained a redacted key writes the placeholder back).  Every other event
+    — including ``thinking_delta`` / ``signature_delta`` — passes through
+    untouched.  Each content block has its own hold-back buffer, released as
+    a synthetic delta just before that block's ``content_block_stop`` so held
+    text never migrates into another block.
+
+    SSE framing: an ``event:`` line is held until its ``data:`` line arrives,
+    so a synthetic frame (which carries its own ``event:`` line — the
+    Anthropic SDKs dispatch on it) can be inserted before a whole frame
+    rather than between a frame's two lines.
     """
 
     def __init__(self, reverse_map: dict[str, str]) -> None:
         self._map = reverse_map or {}
         self._line = bytearray()
-        self._held: str | None = None
+        self._pending_event: bytes | None = None
+        self._blocks: dict[int, tuple[str, StreamRestorer]] = {}
 
     def feed_chunk(self, chunk: bytes) -> bytes:
         self._line += chunk
@@ -575,74 +614,73 @@ class SSETextRestorer:
     def flush(self) -> bytes:
         rest = bytes(self._line)
         self._line.clear()
-        processed = self._process_line(rest) if rest else b""
-        if self._held is not None:
-            # Stream ended mid-placeholder: the placeholder never completed,
-            # so emit what we held verbatim as a final text delta.
-            held = self._held
-            self._held = None
-            log_event("surgery_stream_held_unterminated")
-            synthetic = (
-                b"data: "
-                + json.dumps(
-                    {
-                        "type": "content_block_delta",
-                        "delta": {"type": "text_delta", "text": held},
-                    },
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                ).encode("utf-8")
-                + b"\n\n"
-            )
-            return processed + synthetic
-        return processed
+        out = self._process_line(rest) if rest else b""
+        for index in list(self._blocks):
+            out += self._release(index)
+        if self._pending_event is not None:
+            out += self._pending_event
+            self._pending_event = None
+        return out
+
+    def _release(self, index: int) -> bytes:
+        """Emit what a block still holds (it ended mid-placeholder) verbatim."""
+        entry = self._blocks.pop(index, None)
+        if entry is None:
+            return b""
+        delta_type, restorer = entry
+        held = restorer.flush()
+        if not held:
+            return b""
+        log_event("surgery_stream_held_unterminated")
+        event = {
+            "type": "content_block_delta",
+            "index": index,
+            "delta": {"type": delta_type, _DELTA_FIELDS[delta_type]: held},
+        }
+        payload = json.dumps(event, separators=(",", ":"), ensure_ascii=False)
+        return b"event: content_block_delta\ndata: " + payload.encode("utf-8") + b"\n\n"
+
+    def _restorer(self, index: int, delta_type: str) -> StreamRestorer:
+        entry = self._blocks.get(index)
+        if entry is None:
+            escape = _json_fragment if delta_type == "input_json_delta" else None
+            entry = (delta_type, StreamRestorer(self._map, escape=escape))
+            self._blocks[index] = entry
+        return entry[1]
 
     def _process_line(self, line: bytes) -> bytes:
+        if line.startswith(b"event:"):
+            previous, self._pending_event = self._pending_event or b"", line
+            return previous
+        pending, self._pending_event = self._pending_event or b"", None
         if not line.startswith(b"data:"):
-            return line
+            return pending + line
         payload = line[5:].strip(b" \r\n")
         try:
             event = json.loads(payload)
         except (ValueError, UnicodeDecodeError):
-            return line
-        if not isinstance(event, dict) or event.get("type") != "content_block_delta":
-            return line
+            return pending + line
+        if not isinstance(event, dict):
+            return pending + line
+        index = event.get("index", 0)
+        if not isinstance(index, int):
+            return pending + line
+        if event.get("type") == "content_block_stop":
+            return self._release(index) + pending + line
+        if event.get("type") != "content_block_delta" or not self._map:
+            return pending + line
         delta = event.get("delta")
-        if not isinstance(delta, dict) or delta.get("type") != "text_delta":
-            return line
-        text = delta.get("text")
-        if not isinstance(text, str):
-            return line
-        new_text = self._feed_text(text)
-        if new_text == text:
-            return line
-        delta["text"] = new_text
+        if not isinstance(delta, dict):
+            return pending + line
+        delta_type = delta.get("type")
+        field_name = _DELTA_FIELDS.get(delta_type) if isinstance(delta_type, str) else None
+        value = delta.get(field_name) if field_name else None
+        if field_name is None or not isinstance(value, str):
+            return pending + line
+        new_value = self._restorer(index, str(delta_type)).feed(value)
+        if new_value == value:
+            return pending + line
+        delta[field_name] = new_value
         new_payload = json.dumps(event, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         tail = b"\r\n" if line.endswith(b"\r\n") else b"\n"
-        return b"data: " + new_payload + tail
-
-    def _feed_text(self, s: str) -> str:
-        if self._held is None and (not self._map or PH_PREFIX not in s):
-            return s
-        cur = (self._held + s) if self._held is not None else s
-        self._held = None
-        out: list[str] = []
-        while True:
-            i = cur.find(PH_PREFIX)
-            if i == -1:
-                out.append(cur)
-                break
-            out.append(cur[:i])
-            cur = cur[i:]
-            j = cur.find(PH_SUFFIX, 1)
-            if j == -1:
-                if len(cur) > MAX_PLACEHOLDER_LEN:
-                    out.append(cur)
-                else:
-                    self._held = cur
-                break
-            candidate = cur[: j + 1]
-            replacement = self._map.get(candidate)
-            out.append(replacement if replacement is not None else candidate)
-            cur = cur[j + 1 :]
-        return "".join(out)
+        return pending + b"data: " + new_payload + tail

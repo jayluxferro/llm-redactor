@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import secrets
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -25,23 +26,31 @@ class _SessionTagUnset:
 
 _SESSION_TAG_UNSET = _SessionTagUnset()
 
-# In-memory LRU cache for detection results.  System prompts and repeated
-# user messages (e.g. "continue", "ok") are identical across requests —
-# re-detecting and re-validating them burns local LLM tokens for no gain.
-_DETECT_CACHE: OrderedDict[str, list[Span]] = OrderedDict()
-_DETECT_CACHE_MAX = 256
+# In-memory LRU cache for detection results.  Agent clients resend the whole
+# conversation every turn (system prompt, every earlier tool result), so
+# almost every string in a request was already scanned last turn.  NER costs
+# ~3 s per 100 KB of code, so a miss is expensive: the cache must hold a long
+# session's worth of strings.  Keys are 16-byte digests (memory stays flat
+# however large the texts are) plus the detection settings, so two pipelines
+# with different use_ner / validation settings never share results.
+_DETECT_CACHE: OrderedDict[tuple[object, ...], list[Span]] = OrderedDict()
+_DETECT_CACHE_MAX = 16_384
 
 
-def _cache_detect(text: str, spans: list[Span]) -> None:
-    key = text
+def _cache_key(text: str, *settings: object) -> tuple[object, ...]:
+    # surrogatepass: JSON bodies can carry lone surrogates ("\ud800").
+    digest = hashlib.blake2b(text.encode("utf-8", "surrogatepass"), digest_size=16).digest()
+    return (*settings, digest)
+
+
+def _cache_detect(key: tuple[object, ...], spans: list[Span]) -> None:
     _DETECT_CACHE[key] = spans
     _DETECT_CACHE.move_to_end(key)
     while len(_DETECT_CACHE) > _DETECT_CACHE_MAX:
         _DETECT_CACHE.popitem(last=False)
 
 
-def _cached_detect(text: str) -> list[Span] | None:
-    key = text
+def _cached_detect(key: tuple[object, ...]) -> list[Span] | None:
     if key in _DETECT_CACHE:
         _DETECT_CACHE.move_to_end(key)
         return _DETECT_CACHE[key]
@@ -90,12 +99,14 @@ class OptionBPipeline:
 
     async def detect_spans(self, text: str) -> list[Span]:
         """Run configured detectors with an in-memory cache for repeated text."""
-        cached = _cached_detect(text)
+        validation = self.config.pipeline.llm_validation
+        model = validation.model or self.config.local_model.chat_model
+        key = _cache_key(text, self.use_ner, validation.enabled, validation.backend, model)
+        cached = _cached_detect(key)
         if cached is not None:
             return filter_by_categories(cached, self.config.policy.categories)
 
-        if self.config.pipeline.llm_validation.enabled:
-            model = self.config.pipeline.llm_validation.model or self.config.local_model.chat_model
+        if validation.enabled:
             spans = await detect_all_validated(
                 text,
                 use_ner=self.use_ner,
@@ -107,7 +118,7 @@ class OptionBPipeline:
             # Offload blocking regex+NER off the event loop (see detect_all).
             spans = await asyncio.to_thread(detect_all, text, self.use_ner)
 
-        _cache_detect(text, spans)
+        _cache_detect(key, spans)
         return filter_by_categories(spans, self.config.policy.categories)
 
     async def redact_chat_messages(
@@ -133,18 +144,50 @@ class OptionBPipeline:
 
         for i, msg in enumerate(messages):
             content = msg.get("content", "")
-            if not isinstance(content, str) or not content:
-                continue
-
-            spans = await self.detect_spans(content)
-            all_detections.extend(spans)
-
-            if spans:
-                result = redact(content, spans, gen=gen)
-                redaction_results[i] = result
-                outgoing[i] = {**msg, "content": result.redacted_text}
+            if isinstance(content, str) and content:
+                spans = await self.detect_spans(content)
+                all_detections.extend(spans)
+                if spans:
+                    result = redact(content, spans, gen=gen)
+                    redaction_results[i] = result
+                    outgoing[i] = {**msg, "content": result.redacted_text}
+            elif isinstance(content, list):
+                # Content parts ([{"type": "text", "text": ...}, {"type":
+                # "image_url", ...}]): what multimodal and most current SDK
+                # clients send.  These used to be skipped entirely, i.e.
+                # forwarded unredacted.
+                parts, merged = await self._redact_parts(content, gen, all_detections)
+                if merged is not None:
+                    redaction_results[i] = merged
+                    outgoing[i] = {**msg, "content": parts}
 
         return outgoing, redaction_results, all_detections, placeholder_tag
+
+    async def _redact_parts(
+        self, parts: list[Any], gen: PlaceholderGenerator, detections: list[Span]
+    ) -> tuple[list[Any], RedactionResult | None]:
+        """Redact the ``text`` parts of a content list; others pass unchanged."""
+        out: list[Any] = []
+        merged: RedactionResult | None = None
+        for part in parts:
+            text = part.get("text") if isinstance(part, dict) else None
+            if not (isinstance(part, dict) and part.get("type") == "text" and text):
+                out.append(part)
+                continue
+            spans = await self.detect_spans(text)
+            detections.extend(spans)
+            if not spans:
+                out.append(part)
+                continue
+            result = redact(text, spans, gen=gen)
+            out.append({**part, "text": result.redacted_text})
+            if merged is None:
+                merged = RedactionResult("", {}, [])
+            merged.reverse_map.update(result.reverse_map)
+            merged.placeholders.extend(result.placeholders)
+        if merged is not None:
+            merged.redacted_text = "\n".join(_message_text(p) for p in out)
+        return out, merged
 
     async def run(
         self,
@@ -221,9 +264,7 @@ class OptionBPipeline:
 
         # Leak audit: after redaction the original span text should never
         # appear in the outgoing body. Non-zero = redaction failure.
-        outgoing_text = " ".join(
-            m.get("content", "") for m in outgoing_messages if isinstance(m.get("content"), str)
-        )
+        outgoing_text = " ".join(_message_text(m.get("content")) for m in outgoing_messages)
         survived = sum(1 for s in all_detections if s.text in outgoing_text)
 
         return PipelineResult(
@@ -237,6 +278,18 @@ class OptionBPipeline:
                 "original_span_text_survived": survived,
             },
         )
+
+
+def _message_text(content: Any) -> str:
+    """The text of a string ``content``, a text part, or a list of parts."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, dict):
+        text = content.get("text")
+        return text if content.get("type") == "text" and isinstance(text, str) else ""
+    if isinstance(content, list):
+        return " ".join(_message_text(p) for p in content)
+    return ""
 
 
 class RefusalError(Exception):

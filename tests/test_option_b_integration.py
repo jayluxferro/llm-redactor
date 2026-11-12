@@ -412,3 +412,24 @@ def test_http_proxy_tools_bypass_sets_header() -> None:
     assert resp.status_code == 200
     assert resp.headers.get("X-LLM-Redactor-Mode") == "bypass-tools"
     assert resp.headers.get("X-LLM-Redactor-Bypass-Reason") == "tools-or-functions"
+
+
+async def test_detection_cache_is_keyed_by_settings_not_just_text() -> None:
+    # The module-level cache used to be keyed by text alone, so a pipeline
+    # with use_ner=False could serve its regex-only result to a NER pipeline.
+    from llm_redactor.pipeline import option_b
+
+    text = "unique cache probe 4f1c: mail carol@example.org"
+    calls: list[bool] = []
+
+    def fake_detect(t: str, use_ner: bool = True) -> list:
+        calls.append(use_ner)
+        return []
+
+    cfg = Config()
+    with patch.object(option_b, "detect_all", side_effect=fake_detect):
+        await OptionBPipeline(config=cfg, use_ner=False).detect_spans(text)
+        await OptionBPipeline(config=cfg, use_ner=False).detect_spans(text)  # cached
+        await OptionBPipeline(config=cfg, use_ner=True).detect_spans(text)  # new key
+    assert calls == [False, True]
+    assert all(len(k[-1]) == 16 for k in option_b._DETECT_CACHE)  # digests, not texts

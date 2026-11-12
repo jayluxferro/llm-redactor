@@ -197,10 +197,10 @@ def test_openai_stream_midstream_reset() -> None:
             assert "text/event-stream" in resp.headers["content-type"]
             body = b"".join(resp.iter_bytes())
 
-    # At least one complete upstream frame plus a terminal error frame.
-    # NB: the OpenAI path re-serializes deltas during placeholder restoration,
-    # so assert on content, not byte-exact framing of the relayed event.
-    assert b'"content": "ok "' in body
+    # At least one complete upstream frame plus a terminal error frame.  With
+    # nothing redacted the upstream bytes are relayed untouched (the path used
+    # to re-serialize every event, which this assertion once had to allow for).
+    assert b'"content":"ok "' in body
     assert body.rstrip().endswith(_terminal_error_openai().rstrip())
     assert b"data: [DONE]\n\n" in body
 
@@ -246,7 +246,7 @@ def test_openai_stream_midstream_empty_str_exception_is_typed_in_frame_and_log(
                 assert "text/event-stream" in resp.headers["content-type"]
                 body = b"".join(resp.iter_bytes())
 
-    assert b'"content": "ok "' in body
+    assert b'"content":"ok "' in body
     assert b'"message": "ReadError"' in body
     assert any(
         "mid-stream failure" in r.getMessage() and "ReadError" in r.getMessage()

@@ -241,13 +241,13 @@ def test_chat_completion_retries_are_bounded(httpx_mock: Any) -> None:
         httpx_mock.add_exception(httpx.ReadError(""))
     hx = _client()
 
-    # Bounded: exactly 1 attempt + 2 retries, then the error propagates
-    # unchanged (the non-streaming pipeline path does not translate transport
-    # errors today — this change deliberately does not alter that outcome).
-    with pytest.raises(httpx.ReadError):
-        hx.post("/v1/chat/completions", json=_CHAT_BODY)
+    # Bounded: exactly 1 attempt + 2 retries, then the typed 502 every other
+    # path returns (this path used to let the ReadError escape as a bare 500).
+    resp = hx.post("/v1/chat/completions", json=_CHAT_BODY)
 
     assert len(httpx_mock.get_requests()) == 3
+    assert resp.status_code == 502
+    assert resp.json()["error"] == {"type": "upstream_error", "message": "ReadError"}
 
 
 # ---------------------------------------------------------------------------

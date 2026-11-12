@@ -90,9 +90,6 @@ class StreamResult:
     body: bytes | None = None
     iterator: AsyncIterator[bytes] | None = None
 
-    def is_sse(self) -> bool:
-        return bool(self.content_type) and "text/event-stream" in (self.content_type or "")
-
 
 async def forward_chat_completion(
     body: dict[str, Any],

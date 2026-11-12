@@ -7,6 +7,7 @@ text, and re-emits corrected SSE chunks.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -36,7 +37,7 @@ from ..redact.raw_surgery import (
     redact_signed_request,
     restore_response_bytes,
 )
-from ..redact.restore import restore
+from ..redact.restore import StreamRestorer, restore, restore_json
 from ..retry import retry_upstream
 from ..transport.cloud import (
     DEFAULT_UPSTREAM_TIMEOUT,
@@ -226,6 +227,26 @@ def _plain_upstream_response(result: StreamResult) -> Response:
     )
 
 
+def _upstream_status_response(e: httpx.HTTPStatusError) -> JSONResponse:
+    """Pass an upstream non-2xx through with its status, body and retry-after.
+
+    A 429 or 529 must reach the agent as itself, or it retries immediately
+    instead of backing off (a bare 500 carries no retry semantics).
+    """
+    try:
+        err_body = e.response.json()
+    except Exception:
+        try:
+            text = e.response.text[:500]
+        except Exception:
+            text = f"(undecodable body, {len(e.response.content)} bytes)"
+        err_body = {"error": text}
+    resp_headers: dict[str, str] = {}
+    if ra := e.response.headers.get("retry-after"):
+        resp_headers["retry-after"] = ra
+    return JSONResponse(status_code=e.response.status_code, content=err_body, headers=resp_headers)
+
+
 def _upstream_transport_error(exc: Exception, target: object) -> JSONResponse:
     """Map an upstream transport failure to a typed 504/502 + WARNING log.
 
@@ -390,6 +411,10 @@ async def chat_completions(request: Request) -> JSONResponse | Response | Stream
         )
     except RefusalError as e:
         return _refusal_response(e)
+    except httpx.HTTPStatusError as e:
+        return _upstream_status_response(e)
+    except httpx.HTTPError as e:
+        return _upstream_transport_error(e, config.cloud_target)
 
     # Build the response with redactor metadata.
     response_body = result.response
@@ -450,67 +475,97 @@ async def _handle_openai_stream(
     outgoing.pop("extra_body", None)
 
     # Gate 1: open upstream stream and inspect headers before committing to SSE.
-    upstream = await forward_chat_completion_stream(
-        outgoing,
-        config.cloud_target,
-        upstream_headers=upstream_headers,
-    )
+    try:
+        upstream = await forward_chat_completion_stream(
+            outgoing,
+            config.cloud_target,
+            upstream_headers=upstream_headers,
+        )
+    except httpx.HTTPError as e:
+        return _upstream_transport_error(e, config.cloud_target)
     if upstream.iterator is None:
         return _plain_upstream_response(upstream)
-    # Bind the narrowed iterator to a local: mypy discards attribute narrowing
-    # inside closures, and the async generators below close over it.
-    iterator = upstream.iterator
 
-    async def generate() -> AsyncIterator[bytes]:
-        # Accumulate redacted (upstream) assistant text so placeholders split across
-        # SSE chunks still restore. Emit only the *new* restored suffix per delta.
-        # We cannot slice with len(prev_restored) because completing a placeholder can
-        # rewrite earlier characters (restore(prefix) is not always a text-prefix of
-        # restore(prefix+suffix)); use longest common prefix between successive full
-        # restores instead.
-        accumulated_redacted = ""
-        prev_emit_restored = ""
-        last_choice_index: int | None = None
-
-        async for chunk in iterator:
-            # Parse SSE lines, restore placeholders in content deltas.
-            for line in chunk.decode("utf-8", errors="replace").splitlines():
-                if not line.startswith("data: "):
-                    yield (line + "\n").encode()
-                    continue
-                data = line[6:]
-                if data.strip() == "[DONE]":
-                    yield b"data: [DONE]\n\n"
-                    continue
-                try:
-                    event = json.loads(data)
-                    for choice in event.get("choices", []):
-                        idx = choice.get("index", 0)
-                        if last_choice_index is not None and idx != last_choice_index:
-                            accumulated_redacted = ""
-                            prev_emit_restored = ""
-                        last_choice_index = idx
-
-                        delta = choice.get("delta", {})
-                        piece = delta.get("content")
-                        if piece and combined_reverse_map:
-                            accumulated_redacted += piece
-                            new_restored = restore(accumulated_redacted, combined_reverse_map)
-                            lcp = 0
-                            lim = min(len(prev_emit_restored), len(new_restored))
-                            while lcp < lim and prev_emit_restored[lcp] == new_restored[lcp]:
-                                lcp += 1
-                            delta["content"] = new_restored[lcp:]
-                            prev_emit_restored = new_restored
-                    yield f"data: {json.dumps(event)}\n\n".encode()
-                except json.JSONDecodeError:
-                    yield (line + "\n").encode()
-
+    # Nothing was redacted: pass the upstream bytes through untouched.
+    stream = (
+        _restore_openai_sse(upstream.iterator, combined_reverse_map)
+        if combined_reverse_map
+        else upstream.iterator
+    )
     return StreamingResponse(
-        _gate_2_openai(generate()),
+        _gate_2_openai(stream),
         media_type="text/event-stream",
         headers={"X-LLM-Redactor-Mode": "redacted"},
     )
+
+
+async def _restore_openai_sse(
+    iterator: AsyncIterator[bytes], reverse_map: dict[str, str]
+) -> AsyncIterator[bytes]:
+    """Restore placeholders in an OpenAI chat-completions SSE stream.
+
+    The stream guarantees neither of the two things the previous version
+    assumed.  A network chunk is not a line (lines, and multi-byte UTF-8
+    characters, straddle chunks), so bytes are re-assembled into lines first.
+    A delta is not a placeholder (models emit ``⟨EMAIL_1⟩`` over several
+    deltas), and emitted text cannot be retracted, so each choice gets a
+    StreamRestorer that holds back an incomplete placeholder until it closes.
+    Held text is released at the choice's ``finish_reason`` or before
+    ``[DONE]``, never dropped.
+    """
+    buf = bytearray()
+    restorers: dict[Any, StreamRestorer] = {}
+    meta: dict[str, Any] = {}  # id/model/... copied onto any synthetic chunk
+
+    def release_all() -> bytes:
+        out = bytearray()
+        for index, restorer in restorers.items():
+            held = restorer.flush()
+            if held:
+                event = {**meta, "choices": [{"index": index, "delta": {"content": held}}]}
+                out += f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode()
+        return bytes(out)
+
+    def rewrite(line: bytes) -> bytes:
+        if not line.startswith(b"data:"):
+            return line
+        data = line[5:].strip()
+        if data == b"[DONE]":
+            return release_all() + line
+        try:
+            event = json.loads(data)
+        except ValueError:
+            return line
+        if not isinstance(event, dict):
+            return line
+        meta.update({k: event[k] for k in ("id", "object", "created", "model") if k in event})
+        changed = False
+        for choice in event.get("choices") or []:
+            if not isinstance(choice, dict) or not isinstance(choice.get("delta"), dict):
+                continue
+            restorer = restorers.setdefault(choice.get("index", 0), StreamRestorer(reverse_map))
+            piece = choice["delta"].get("content")
+            new = restorer.feed(piece) if isinstance(piece, str) else piece
+            if choice.get("finish_reason") is not None and (held := restorer.flush()):
+                new = (new or "") + held
+            if new != piece:
+                choice["delta"]["content"] = new
+                changed = True
+        if not changed:
+            return line
+        tail = b"\r\n" if line.endswith(b"\r\n") else b"\n"
+        return b"data: " + json.dumps(event, ensure_ascii=False).encode() + tail
+
+    async for chunk in iterator:
+        buf += chunk
+        while (nl := buf.find(b"\n")) != -1:
+            line = bytes(buf[: nl + 1])
+            del buf[: nl + 1]
+            yield rewrite(line)
+    if buf:
+        yield rewrite(bytes(buf))
+    if held := release_all():
+        yield held
 
 
 async def _forward_openai_transparent(
@@ -532,11 +587,14 @@ async def _forward_openai_transparent(
     is_stream = body.get("stream", False)
     if is_stream:
         # Gate 1: open upstream before committing to SSE.
-        upstream = await forward_chat_completion_stream(
-            body,
-            config.cloud_target,
-            upstream_headers=headers,
-        )
+        try:
+            upstream = await forward_chat_completion_stream(
+                body,
+                config.cloud_target,
+                upstream_headers=headers,
+            )
+        except httpx.HTTPError as e:
+            return _upstream_transport_error(e, config.cloud_target)
         if upstream.iterator is None:
             return _plain_upstream_response(upstream)
 
@@ -553,27 +611,11 @@ async def _forward_openai_transparent(
             upstream_headers=headers,
         )
     except httpx.HTTPStatusError as e:
-        try:
-            err_body = e.response.json()
-        except Exception:
-            try:
-                text = e.response.text[:500]
-            except Exception:
-                text = f"(undecodable body, {len(e.response.content)} bytes)"
-            err_body = {"error": text}
-        resp_headers: dict[str, str] = {}
-        if ra := e.response.headers.get("retry-after"):
-            resp_headers["retry-after"] = ra
-        return JSONResponse(
-            status_code=e.response.status_code,
-            content=err_body,
-            headers=resp_headers,
-        )
-    except (httpx.ConnectError, httpx.TimeoutException) as e:
-        return JSONResponse(
-            status_code=502,
-            content={"error": {"type": "upstream_error", "message": str(e)}},
-        )
+        return _upstream_status_response(e)
+    except httpx.HTTPError as e:
+        # Every transport failure, typed (ReadError etc. used to escape as 500s
+        # and ConnectError carried an empty message).
+        return _upstream_transport_error(e, config.cloud_target)
 
     return JSONResponse(content=resp, headers=bypass_headers)
 
@@ -581,23 +623,47 @@ async def _forward_openai_transparent(
 # --------------- Anthropic Messages endpoint ---------------
 
 
+async def _restore_anthropic_sse(
+    iterator: AsyncIterator[bytes], reverse_map: dict[str, str]
+) -> AsyncIterator[bytes]:
+    """Text and tool-call deltas with placeholders restored (see SSETextRestorer)."""
+    restorer = SSETextRestorer(reverse_map)
+    async for chunk in iterator:
+        if out := restorer.feed_chunk(chunk):
+            yield out
+    if tail := restorer.flush():
+        yield tail
+
+
 async def _handle_anthropic_stream(
     outgoing: dict[str, Any],
     config: Config,
     upstream_headers: dict[str, str],
     combined_reverse_map: dict[str, str],
-    all_detections: list[Span],
 ) -> StreamingResponse | Response:
-    """Stream Anthropic SSE chunks from upstream with placeholder restoration."""
+    """Stream Anthropic SSE chunks from upstream with placeholder restoration.
+
+    This used to pass the stream through untouched, so every streaming client
+    (Claude Code always streams) saw raw ``⟨EMAIL_1⟩`` placeholders, and wrote
+    them into files whenever the model echoed one inside a tool call.
+    """
     # Gate 1: open upstream stream and inspect headers before committing to SSE.
-    upstream = await forward_anthropic_messages_stream(
-        outgoing, config.cloud_target, upstream_headers=upstream_headers
-    )
+    try:
+        upstream = await forward_anthropic_messages_stream(
+            outgoing, config.cloud_target, upstream_headers=upstream_headers
+        )
+    except httpx.HTTPError as e:
+        return _upstream_transport_error(e, config.cloud_target)
     if upstream.iterator is None:
         return _plain_upstream_response(upstream)
 
+    stream = (
+        _restore_anthropic_sse(upstream.iterator, combined_reverse_map)
+        if combined_reverse_map
+        else upstream.iterator
+    )
     return StreamingResponse(
-        _gate_2_anthropic(upstream.iterator),
+        _gate_2_anthropic(stream),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -607,17 +673,108 @@ async def _handle_anthropic_stream(
     )
 
 
+async def _redact_anthropic_body(
+    body: dict[str, Any], pipeline: OptionBPipeline, gen: PlaceholderGenerator
+) -> tuple[dict[str, Any], dict[str, str], list[Span]]:
+    """Redact every model-visible string of an unsigned Messages request.
+
+    Scope: ``system`` (string or text blocks) and, in every message, string
+    content, ``text`` blocks, ``tool_result`` content, every string inside a
+    ``tool_use`` input, and text ``document`` sources.  Only ``text`` blocks
+    used to be redacted, and agent traffic keeps most of its secrets in the
+    other places: file contents and command output (``cat .env``) come back
+    as tool results, and the system prompt carries project instructions.
+    ``raw_surgery._is_redactable`` mirrors this scope for signed requests.
+
+    Returns ``(outgoing body, reverse map, detections)``.
+    """
+    reverse_map: dict[str, str] = {}
+    detections: list[Span] = []
+
+    async def scrub(text: str) -> str:
+        if not text:
+            return text
+        spans = await pipeline.detect_spans(text)
+        if not spans:
+            return text
+        detections.extend(spans)
+        result = redact(text, spans, gen=gen)
+        reverse_map.update(result.reverse_map)
+        return result.redacted_text
+
+    async def scrub_json(value: Any) -> Any:
+        if isinstance(value, str):
+            return await scrub(value)
+        if isinstance(value, list):
+            return [await scrub_json(v) for v in value]
+        if isinstance(value, dict):
+            return {k: await scrub_json(v) for k, v in value.items()}
+        return value
+
+    async def scrub_content(content: Any) -> Any:
+        if isinstance(content, str):
+            return await scrub(content)
+        if not isinstance(content, list):
+            return content
+        blocks: list[Any] = []
+        for block in content:
+            if isinstance(block, dict):
+                kind = block.get("type")
+                source = block.get("source")
+                if kind == "text" and isinstance(block.get("text"), str):
+                    block = {**block, "text": await scrub(block["text"])}
+                elif kind == "tool_result" and "content" in block:
+                    block = {**block, "content": await scrub_content(block["content"])}
+                elif kind == "tool_use" and "input" in block:
+                    block = {**block, "input": await scrub_json(block["input"])}
+                elif (
+                    kind == "document"
+                    and isinstance(source, dict)
+                    and source.get("type") == "text"
+                    and isinstance(source.get("data"), str)
+                ):
+                    block = {**block, "source": {**source, "data": await scrub(source["data"])}}
+            blocks.append(block)
+        return blocks
+
+    outgoing = dict(body)
+    if "system" in body:
+        outgoing["system"] = await scrub_content(body["system"])
+    if isinstance(body.get("messages"), list):
+        outgoing["messages"] = [
+            {**msg, "content": await scrub_content(msg["content"])}
+            if isinstance(msg, dict) and "content" in msg
+            else msg
+            for msg in body["messages"]
+        ]
+    return outgoing, reverse_map, detections
+
+
+def _restore_anthropic_content(blocks: list[Any], reverse_map: dict[str, str]) -> None:
+    """Restore placeholders in response text blocks and tool-call inputs, in place."""
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text" and isinstance(block.get("text"), str):
+            block["text"] = restore(block["text"], reverse_map)
+        elif block.get("type") == "tool_use" and "input" in block:
+            block["input"] = restore_json(block["input"], reverse_map)
+
+
 @app.post("/v1/messages", response_model=None)
 async def anthropic_messages(request: Request) -> JSONResponse | StreamingResponse | Response:
     """Anthropic Messages API endpoint with redaction.
 
-    Redacts content blocks in the request, forwards to the Anthropic
-    endpoint, and restores placeholders in the response.
+    Redacts the request (see ``_redact_anthropic_body`` for the scope),
+    forwards it to the Anthropic endpoint, and restores placeholders in the
+    response, streamed or not.
 
     If the request carries any ``thinking`` / ``redacted_thinking`` blocks,
     Anthropic validates their signatures against the original JSON bytes —
-    any json.loads/dumps round-trip breaks them with a 400.  In that case
-    we forward the raw inbound bytes unchanged and skip redaction entirely.
+    any json.loads/dumps round-trip breaks them with a 400.  Those requests
+    are redacted surgically on the raw bytes (``raw_surgery``); only when
+    there is nothing to redact, or the surgery itself fails, are the inbound
+    bytes forwarded unchanged (``X-LLM-Redactor-Mode: signed-passthrough``).
     """
     raw_body = await request.body()
     try:
@@ -758,44 +915,12 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
             headers=out_headers,
         )
 
-    # Redact content in each message (one placeholder tag per upstream request).
-    messages = body.get("messages", [])
-    combined_reverse_map: dict[str, str] = {}
-    all_detections: list[Span] = []
+    # Redact every model-visible string (one placeholder tag per upstream request).
     ph_tag = _placeholder_session_tag(body, pipeline)
-
-    outgoing_messages = []
     gen = PlaceholderGenerator(session_tag=ph_tag)
-    for msg in messages:
-        content = msg.get("content", "")
-        # Anthropic supports string content or list of content blocks.
-        if isinstance(content, str):
-            spans = await pipeline.detect_spans(content)
-            all_detections.extend(spans)
-            if spans:
-                result = redact(content, spans, gen=gen)
-                combined_reverse_map.update(result.reverse_map)
-                outgoing_messages.append({**msg, "content": result.redacted_text})
-            else:
-                outgoing_messages.append(msg)
-        elif isinstance(content, list):
-            # List of content blocks [{type: "text", text: "..."}].
-            new_blocks = []
-            for block in content:
-                if block.get("type") == "text" and "text" in block:
-                    spans = await pipeline.detect_spans(block["text"])
-                    all_detections.extend(spans)
-                    if spans:
-                        result = redact(block["text"], spans, gen=gen)
-                        combined_reverse_map.update(result.reverse_map)
-                        new_blocks.append({**block, "text": result.redacted_text})
-                    else:
-                        new_blocks.append(block)
-                else:
-                    new_blocks.append(block)
-            outgoing_messages.append({**msg, "content": new_blocks})
-        else:
-            outgoing_messages.append(msg)
+    outgoing, combined_reverse_map, all_detections = await _redact_anthropic_body(
+        body, pipeline, gen
+    )
 
     if pipeline.config.pipeline.opt_b_redact.strict:
         low_conf = [s for s in all_detections if s.confidence < 0.5]
@@ -814,9 +939,6 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
         placeholder_tag=bool(ph_tag),
     )
 
-    outgoing = dict(body)
-    outgoing["messages"] = outgoing_messages
-
     # Forward all headers from the incoming request (minus hop-by-hop).
     _skip = frozenset(
         {
@@ -831,11 +953,8 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
     upstream_headers = {k: v for k, v in request.headers.items() if k.lower() not in _skip}
 
     if body.get("stream"):
-        # Client wants streaming — proxy SSE chunks through directly.
-        # Placeholder restoration in streaming mode is deferred to a
-        # future implementation (the OpenAI path already supports it).
         return await _handle_anthropic_stream(
-            outgoing, config, upstream_headers, combined_reverse_map, all_detections
+            outgoing, config, upstream_headers, combined_reverse_map
         )
 
     # Non-streaming path: full redact → forward → restore.
@@ -848,22 +967,7 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
     except httpx.HTTPStatusError as e:
         # Pass through the upstream status code, body, and rate-limit headers
         # so the agent knows when to retry instead of getting a generic 502.
-        try:
-            err_body = e.response.json()
-        except Exception:
-            try:
-                text = e.response.text[:500]
-            except Exception:
-                text = f"(undecodable body, {len(e.response.content)} bytes)"
-            err_body = {"error": text}
-        resp_headers = {}
-        if ra := e.response.headers.get("retry-after"):
-            resp_headers["retry-after"] = ra
-        return JSONResponse(
-            status_code=e.response.status_code,
-            content=err_body,
-            headers=resp_headers,
-        )
+        return _upstream_status_response(e)
     except Exception as e:
         # Transport failures land here (HTTPStatusError is handled above).
         # httpx exceptions often have an EMPTY str() — the helper types them.
@@ -894,11 +998,9 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
         response_bytes=len(json.dumps(cloud_response)),
     )
 
-    # Restore placeholders in response content blocks.
+    # Restore placeholders in response text and tool-call inputs.
     if combined_reverse_map:
-        for block in cloud_response["content"]:
-            if block.get("type") == "text" and "text" in block:
-                block["text"] = restore(block["text"], combined_reverse_map)
+        _restore_anthropic_content(cloud_response["content"], combined_reverse_map)
 
     cloud_response["redactor"] = {
         "options_applied": ["B"],
@@ -925,8 +1027,8 @@ async def redactor_detect(request: Request) -> JSONResponse:
     Response:      [{"start": 0, "end": 5, "kind": "person",
                      "confidence": 0.92, "text": "Alice", "source": "ner"}]
 
-    This is the endpoint you point the Burp plugin's NER endpoint field at:
-        http://localhost:7789/v1/redactor/detect
+    (The Burp plugin calls ``/v1/redactor/detect-batch`` below instead; it has
+    no configurable endpoint field.)
     """
     raw = await request.body()
     if not raw:
@@ -1010,7 +1112,11 @@ async def redactor_redact_image(request: Request) -> Response | JSONResponse:
     media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
     source = await request.body()
     try:
-        redacted, detections = _get_image_redactor().redact(source, media_type)
+        # ONNX inference is CPU-bound: off the event loop, like NER, or every
+        # other request on this worker stalls behind it.
+        redacted, detections = await asyncio.to_thread(
+            _get_image_redactor().redact, source, media_type
+        )
     except ImageRedactionUnavailable as exc:
         return JSONResponse(status_code=503, content={"error": str(exc)})
     except InvalidImage as exc:
@@ -1101,23 +1207,69 @@ def _summarize_detections(detections: list) -> list[dict[str, Any]]:
     return [{"kind": k, "count": v} for k, v in counts.items()]
 
 
+@app.post("/v1/messages/count_tokens", response_model=None)
+async def anthropic_count_tokens(request: Request) -> Response:
+    """Token counting, redacted exactly like ``/v1/messages``.
+
+    The body is the same conversation the next ``/v1/messages`` call sends, so
+    the old raw passthrough leaked everything that call redacts.  Counting the
+    redacted body is also the *right* count: it is what the model receives.
+    With nothing to redact, the inbound bytes are forwarded untouched.
+    """
+    raw = await request.body()
+    try:
+        body: Any = json.loads(raw) if raw else {}
+    except json.JSONDecodeError as e:
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"type": "invalid_request_error", "message": str(e)}},
+        )
+    pipeline = _get_pipeline()
+    forward = raw
+    if isinstance(body, dict):
+        gen = PlaceholderGenerator(session_tag=_placeholder_session_tag(body, pipeline))
+        if _body_has_signed_blocks(body):
+            try:
+                surgical = await redact_signed_request(raw, pipeline.detect_spans, gen)
+                forward = surgical.new_raw
+            except SurgeryError as exc:
+                # Same fail-open trade-off as the signed /v1/messages path.
+                pipeline._stats["surgery_failed"] += 1
+                log_event("proxy_count_tokens_surgery_failed", error=str(exc)[:200])
+        else:
+            outgoing, _, detections = await _redact_anthropic_body(body, pipeline, gen)
+            if detections:
+                forward = json.dumps(outgoing, ensure_ascii=False).encode("utf-8")
+    return await _forward_raw(request, "v1/messages/count_tokens", forward)
+
+
 # --------------- Catch-all raw passthrough ---------------
 
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def raw_passthrough(request: Request, path: str) -> Response:
-    """Catch-all for endpoints without a dedicated route (count_tokens, models, …).
+    """Catch-all for endpoints without a dedicated route (models, batches, …).
 
     Registered LAST so every explicit route above wins.  Forwards the inbound
-    bytes RAW to the upstream — no redaction, no JSON round-trip — so payloads
-    Anthropic validates against the original encoding (signed thinking blocks,
-    count_tokens bodies) stay byte-identical.  Header recipe mirrors
-    ``forward_anthropic_raw`` (cloud.py): forwarded headers minus hop-by-hop,
-    then content-type + anthropic-version defaults, and the env API key only
-    when the client sent neither ``x-api-key`` nor ``authorization``.
+    bytes RAW to the upstream — no redaction, no JSON round-trip.  NOTE: that
+    means any content-bearing endpoint without a route of its own here (e.g.
+    OpenAI ``/v1/responses``, ``/v1/embeddings``, or a base URL missing its
+    ``/v1``) reaches the cloud unredacted; responses carry
+    ``X-LLM-Redactor-Mode: raw-passthrough`` so that is at least visible.
+    """
+    return await _forward_raw(request, path, await request.body())
+
+
+async def _forward_raw(request: Request, path: str, content: bytes) -> Response:
+    """Forward ``content`` to ``<endpoint>/<path>`` with the inbound method and query.
+
+    Header recipe mirrors ``forward_anthropic_raw`` (cloud.py): forwarded
+    headers minus hop-by-hop, then content-type + anthropic-version defaults,
+    and the env API key only when the client sent neither ``x-api-key`` nor
+    ``authorization``.
     """
     config = _get_config()
-    raw = await request.body()
+    mode = "redacted" if path == "v1/messages/count_tokens" else "raw-passthrough"
 
     _skip_hop = frozenset(
         {"host", "transfer-encoding", "connection", "content-length", "content-encoding"}
@@ -1140,20 +1292,25 @@ async def raw_passthrough(request: Request, path: str) -> Response:
     if request.url.query:
         url = f"{url}?{request.url.query}"
     try:
-        async with httpx.AsyncClient(
-            limits=httpx.Limits(keepalive_expiry=2.0),
-            timeout=DEFAULT_UPSTREAM_TIMEOUT,
-        ) as client:
-            # Pre-commit raw passthrough: the full body is read before the
-            # response is built, so a transient transport failure may be
-            # re-sent.  `raw` is forwarded verbatim — the retry re-sends the
-            # same bytes and never re-runs redaction.
-            resp = await retry_upstream(
-                lambda: client.request(request.method, url, content=raw, headers=headers),
-                operation="raw passthrough",
-            )
+        # The shared, bounded pool (cloud.get_client): a fresh AsyncClient per
+        # request is the FD-exhaustion pattern cloud.py documents and removed
+        # everywhere else.  Pre-commit: the full body is read before the
+        # response is built, so a transient transport failure may be re-sent;
+        # the same bytes go out again and redaction is never re-run.
+        client = get_client()
+        resp = await retry_upstream(
+            lambda: client.request(
+                request.method,
+                url,
+                content=content,
+                headers=headers,
+                timeout=DEFAULT_UPSTREAM_TIMEOUT,
+            ),
+            operation="raw passthrough",
+        )
     except httpx.HTTPError as e:
         return _upstream_transport_error(e, config.cloud_target)
 
     out_headers = {k: v for k, v in resp.headers.items() if k.lower() not in _HOP_BY_HOP}
+    out_headers["X-LLM-Redactor-Mode"] = mode
     return Response(content=resp.content, status_code=resp.status_code, headers=out_headers)
