@@ -14,10 +14,10 @@ import logging
 import os
 import secrets
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import httpx
 from fastapi import FastAPI, Request
@@ -28,8 +28,8 @@ from ..detect.orchestrator import apply_detection_config
 from ..detect.types import Span
 from ..image.redactor import ImageRedactionUnavailable, InvalidImage, OnnxImageRedactor
 from ..observability import configure_logging, log_event
-from ..pipeline.option_b import OptionBPipeline, RefusalError
-from ..redact.placeholder import PlaceholderGenerator, redact
+from ..pipeline.option_b import OptionBPipeline, RefusalError, RequestScrubber
+from ..redact.placeholder import PlaceholderGenerator
 from ..redact.raw_surgery import (
     RawRedaction,
     SSETextRestorer,
@@ -37,7 +37,7 @@ from ..redact.raw_surgery import (
     redact_signed_request,
     restore_response_bytes,
 )
-from ..redact.restore import StreamRestorer, restore, restore_json
+from ..redact.restore import StreamRestorer, json_fragment, restore, restore_json
 from ..retry import retry_upstream
 from ..transport.cloud import (
     DEFAULT_UPSTREAM_TIMEOUT,
@@ -48,8 +48,10 @@ from ..transport.cloud import (
     forward_anthropic_raw,
     forward_anthropic_raw_stream,
     forward_chat_completion_stream,
+    forward_openai_json,
     get_client,
 )
+from .openai_responses import ResponsesSSERestorer, redact_responses_body, restore_responses
 
 
 def _placeholder_session_tag(body: dict[str, Any], pipeline: OptionBPipeline) -> str | None:
@@ -349,10 +351,12 @@ async def chat_completions(request: Request) -> JSONResponse | Response | Stream
     )
     upstream_headers = {k: v for k, v in request.headers.items() if k.lower() not in _skip}
 
-    # Tool-bearing requests: policy decides bypass vs refuse (redaction
-    # cannot reliably span tool schemas).
+    # Tool-bearing requests.  "redact" (the default) redacts messages, tool
+    # results and tool-call arguments like any other request and forwards the
+    # tool *schemas* untouched; "refuse" rejects; "bypass" forwards the request
+    # unredacted (the old default, which left most agent traffic in the clear).
     if "tools" in body or "functions" in body:
-        policy = (config.transport.tools_policy or "bypass").lower()
+        policy = config.transport.tools_policy
         if policy == "refuse":
             log_event(
                 "proxy_tools_refused",
@@ -367,20 +371,20 @@ async def chat_completions(request: Request) -> JSONResponse | Response | Stream
                         "type": "redactor_refused",
                         "reason": "tools_or_functions_present",
                         "message": (
-                            "This proxy cannot redact tool/function payloads safely. "
-                            "Remove tools/functions, set transport.tools_policy to bypass, "
-                            "or call the model without tools when using the redactor."
+                            "transport.tools_policy is 'refuse'. Set it to 'redact' "
+                            "(the default) to redact tool-bearing requests."
                         ),
                     },
                 },
             )
-        log_event(
-            "proxy_tools_bypass",
-            path="/v1/chat/completions",
-            streaming=bool(body.get("stream")),
-        )
-        _get_pipeline()._stats["tools_bypass"] += 1
-        return await _forward_openai_transparent(body, config, upstream_headers)
+        if policy == "bypass":
+            log_event(
+                "proxy_tools_bypass",
+                path="/v1/chat/completions",
+                streaming=bool(body.get("stream")),
+            )
+            _get_pipeline()._stats["tools_bypass"] += 1
+            return await _forward_openai_transparent(body, config, upstream_headers)
 
     # Allow per-request overrides via extra_body.redactor.
     extra = body.get("extra_body", {}).get("redactor", {})
@@ -440,12 +444,8 @@ async def _handle_openai_stream(
 ) -> Response | StreamingResponse:
     """Redact the request, stream from cloud, restore placeholders in deltas."""
     messages = body.get("messages", [])
-    (
-        outgoing_messages,
-        redaction_results,
-        stream_detections,
-        ph_tag,
-    ) = await pipeline.redact_chat_messages(messages)
+    outgoing_messages, scrub, ph_tag = await pipeline.redact_chat_messages(messages)
+    stream_detections = scrub.detections
 
     # Track stats (non-streaming path does this inside pipeline.run())
     pipeline._stats["requests"] += 1
@@ -460,9 +460,7 @@ async def _handle_openai_stream(
                 RefusalError(reason="low_confidence_detection", spans=low_conf)
             )
 
-    combined_reverse_map: dict[str, str] = {}
-    for rr in redaction_results.values():
-        combined_reverse_map.update(rr.reverse_map)
+    combined_reverse_map = scrub.reverse_map
 
     log_event(
         "proxy_stream_prepared",
@@ -510,19 +508,66 @@ async def _restore_openai_sse(
     A delta is not a placeholder (models emit ``⟨EMAIL_1⟩`` over several
     deltas), and emitted text cannot be retracted, so each choice gets a
     StreamRestorer that holds back an incomplete placeholder until it closes.
+    Streamed tool calls (``delta.tool_calls[i].function.arguments``) are JSON
+    text, so each call gets its own restorer that JSON-escapes originals.
     Held text is released at the choice's ``finish_reason`` or before
     ``[DONE]``, never dropped.
     """
     buf = bytearray()
-    restorers: dict[Any, StreamRestorer] = {}
+    # (choice, "content") / (choice, "tool", call index) / (choice, "function_call")
+    restorers: dict[tuple[Any, ...], StreamRestorer] = {}
     meta: dict[str, Any] = {}  # id/model/... copied onto any synthetic chunk
+
+    def restorer(key: tuple[Any, ...], *, json_text: bool) -> StreamRestorer:
+        if key not in restorers:
+            escape = json_fragment if json_text else None
+            restorers[key] = StreamRestorer(reverse_map, escape=escape)
+        return restorers[key]
+
+    def feed(key: tuple[Any, ...], holder: dict[str, Any], field: str, *, json_text: bool) -> bool:
+        value = holder.get(field)
+        if not isinstance(value, str):
+            return False
+        new = restorer(key, json_text=json_text).feed(value)
+        holder[field] = new
+        return new != value
+
+    def flush_into(index: Any, choice: dict[str, Any]) -> bool:
+        """Append everything one choice still holds to it (delta, or text)."""
+        changed = False
+        for key in [k for k in restorers if k[0] == index]:
+            held = restorers.pop(key).flush()
+            if not held:
+                continue
+            changed = True
+            if key[1] == "text":  # legacy /v1/completions: no delta object
+                choice["text"] = (choice.get("text") or "") + held
+                continue
+            delta = choice.setdefault("delta", {})
+            if key[1] == "content":
+                delta["content"] = (delta.get("content") or "") + held
+                continue
+            if key[1] == "tool":
+                calls = delta.setdefault("tool_calls", [])
+                entry = next(
+                    (c for c in calls if isinstance(c, dict) and c.get("index", 0) == key[2]),
+                    None,
+                )
+                if entry is None:
+                    entry = {"index": key[2]}
+                    calls.append(entry)
+                holder = entry.setdefault("function", {})
+            else:
+                holder = delta.setdefault("function_call", {})
+            holder["arguments"] = (holder.get("arguments") or "") + held
+        return changed
 
     def release_all() -> bytes:
         out = bytearray()
-        for index, restorer in restorers.items():
-            held = restorer.flush()
-            if held:
-                event = {**meta, "choices": [{"index": index, "delta": {"content": held}}]}
+        for index in list(dict.fromkeys(k[0] for k in restorers)):
+            choice: dict[str, Any] = {"index": index}
+            if flush_into(index, choice):
+                event = {**meta, "choices": [choice]}
                 out += f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode()
         return bytes(out)
 
@@ -541,16 +586,28 @@ async def _restore_openai_sse(
         meta.update({k: event[k] for k in ("id", "object", "created", "model") if k in event})
         changed = False
         for choice in event.get("choices") or []:
-            if not isinstance(choice, dict) or not isinstance(choice.get("delta"), dict):
+            if not isinstance(choice, dict):
                 continue
-            restorer = restorers.setdefault(choice.get("index", 0), StreamRestorer(reverse_map))
-            piece = choice["delta"].get("content")
-            new = restorer.feed(piece) if isinstance(piece, str) else piece
-            if choice.get("finish_reason") is not None and (held := restorer.flush()):
-                new = (new or "") + held
-            if new != piece:
-                choice["delta"]["content"] = new
-                changed = True
+            index = choice.get("index", 0)
+            if isinstance(choice.get("text"), str) and "delta" not in choice:
+                changed |= feed((index, "text"), choice, "text", json_text=False)
+                if choice.get("finish_reason") is not None:
+                    changed |= flush_into(index, choice)
+                continue
+            if not isinstance(choice.get("delta"), dict):
+                continue
+            delta = choice["delta"]
+            changed |= feed((index, "content"), delta, "content", json_text=False)
+            for call in delta.get("tool_calls") or []:
+                function = call.get("function") if isinstance(call, dict) else None
+                if isinstance(function, dict):
+                    tool_key = (index, "tool", call.get("index", 0))
+                    changed |= feed(tool_key, function, "arguments", json_text=True)
+            if isinstance(delta.get("function_call"), dict):
+                legacy_key = (index, "function_call")
+                changed |= feed(legacy_key, delta["function_call"], "arguments", json_text=True)
+            if choice.get("finish_reason") is not None:
+                changed |= flush_into(index, choice)
         if not changed:
             return line
         tail = b"\r\n" if line.endswith(b"\r\n") else b"\n"
@@ -623,11 +680,15 @@ async def _forward_openai_transparent(
 # --------------- Anthropic Messages endpoint ---------------
 
 
-async def _restore_anthropic_sse(
-    iterator: AsyncIterator[bytes], reverse_map: dict[str, str]
+class _ChunkRestorer(Protocol):
+    def feed_chunk(self, chunk: bytes) -> bytes: ...
+    def flush(self) -> bytes: ...
+
+
+async def _restored(
+    iterator: AsyncIterator[bytes], restorer: _ChunkRestorer
 ) -> AsyncIterator[bytes]:
-    """Text and tool-call deltas with placeholders restored (see SSETextRestorer)."""
-    restorer = SSETextRestorer(reverse_map)
+    """Pipe an SSE byte stream through an event-aware placeholder restorer."""
     async for chunk in iterator:
         if out := restorer.feed_chunk(chunk):
             yield out
@@ -658,7 +719,7 @@ async def _handle_anthropic_stream(
         return _plain_upstream_response(upstream)
 
     stream = (
-        _restore_anthropic_sse(upstream.iterator, combined_reverse_map)
+        _restored(upstream.iterator, SSETextRestorer(combined_reverse_map))
         if combined_reverse_map
         else upstream.iterator
     )
@@ -673,9 +734,7 @@ async def _handle_anthropic_stream(
     )
 
 
-async def _redact_anthropic_body(
-    body: dict[str, Any], pipeline: OptionBPipeline, gen: PlaceholderGenerator
-) -> tuple[dict[str, Any], dict[str, str], list[Span]]:
+async def _redact_anthropic_body(body: dict[str, Any], scrub: RequestScrubber) -> dict[str, Any]:
     """Redact every model-visible string of an unsigned Messages request.
 
     Scope: ``system`` (string or text blocks) and, in every message, string
@@ -685,69 +744,48 @@ async def _redact_anthropic_body(
     other places: file contents and command output (``cat .env``) come back
     as tool results, and the system prompt carries project instructions.
     ``raw_surgery._is_redactable`` mirrors this scope for signed requests.
-
-    Returns ``(outgoing body, reverse map, detections)``.
+    Tool results and inputs are scrubbed as tool content (see
+    ``pipeline.tool_content_ner``).
     """
-    reverse_map: dict[str, str] = {}
-    detections: list[Span] = []
 
-    async def scrub(text: str) -> str:
-        if not text:
-            return text
-        spans = await pipeline.detect_spans(text)
-        if not spans:
-            return text
-        detections.extend(spans)
-        result = redact(text, spans, gen=gen)
-        reverse_map.update(result.reverse_map)
-        return result.redacted_text
-
-    async def scrub_json(value: Any) -> Any:
+    async def content(value: Any, *, tool: bool = False) -> Any:
         if isinstance(value, str):
-            return await scrub(value)
-        if isinstance(value, list):
-            return [await scrub_json(v) for v in value]
-        if isinstance(value, dict):
-            return {k: await scrub_json(v) for k, v in value.items()}
-        return value
-
-    async def scrub_content(content: Any) -> Any:
-        if isinstance(content, str):
-            return await scrub(content)
-        if not isinstance(content, list):
-            return content
+            return await scrub.text(value, tool_content=tool)
+        if not isinstance(value, list):
+            return value
         blocks: list[Any] = []
-        for block in content:
+        for block in value:
             if isinstance(block, dict):
                 kind = block.get("type")
                 source = block.get("source")
                 if kind == "text" and isinstance(block.get("text"), str):
-                    block = {**block, "text": await scrub(block["text"])}
+                    block = {**block, "text": await scrub.text(block["text"], tool_content=tool)}
                 elif kind == "tool_result" and "content" in block:
-                    block = {**block, "content": await scrub_content(block["content"])}
+                    block = {**block, "content": await content(block["content"], tool=True)}
                 elif kind == "tool_use" and "input" in block:
-                    block = {**block, "input": await scrub_json(block["input"])}
+                    block = {**block, "input": await scrub.json_value(block["input"])}
                 elif (
                     kind == "document"
                     and isinstance(source, dict)
                     and source.get("type") == "text"
                     and isinstance(source.get("data"), str)
                 ):
-                    block = {**block, "source": {**source, "data": await scrub(source["data"])}}
+                    data = await scrub.text(source["data"])
+                    block = {**block, "source": {**source, "data": data}}
             blocks.append(block)
         return blocks
 
     outgoing = dict(body)
     if "system" in body:
-        outgoing["system"] = await scrub_content(body["system"])
+        outgoing["system"] = await content(body["system"])
     if isinstance(body.get("messages"), list):
         outgoing["messages"] = [
-            {**msg, "content": await scrub_content(msg["content"])}
+            {**msg, "content": await content(msg["content"])}
             if isinstance(msg, dict) and "content" in msg
             else msg
             for msg in body["messages"]
         ]
-    return outgoing, reverse_map, detections
+    return outgoing
 
 
 def _restore_anthropic_content(blocks: list[Any], reverse_map: dict[str, str]) -> None:
@@ -759,6 +797,38 @@ def _restore_anthropic_content(blocks: list[Any], reverse_map: dict[str, str]) -
             block["text"] = restore(block["text"], reverse_map)
         elif block.get("type") == "tool_use" and "input" in block:
             block["input"] = restore_json(block["input"], reverse_map)
+
+
+async def _surgical_or_refusal(
+    raw: bytes, body: dict[str, Any], pipeline: OptionBPipeline
+) -> RawRedaction | JSONResponse:
+    """Surgically redact a signed body, or the 422 to return when that fails."""
+    gen = PlaceholderGenerator(session_tag=_placeholder_session_tag(body, pipeline))
+
+    async def tool_spans(text: str) -> list[Span]:
+        return await pipeline.detect_spans(text, tool_content=True)
+
+    try:
+        return await redact_signed_request(
+            raw, pipeline.detect_spans, gen, tool_detect_spans=tool_spans
+        )
+    except SurgeryError as exc:
+        pipeline._stats["surgery_failed"] += 1
+        log_event("proxy_anthropic_surgery_failed", error=type(exc).__name__)
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": {
+                    "type": "redactor_refused",
+                    "reason": "signed_body_unredactable",
+                    "message": (
+                        "This request carries signed thinking blocks and its raw "
+                        "JSON could not be edited safely, so it was not forwarded "
+                        "(forwarding it would send it unredacted)."
+                    ),
+                }
+            },
+        )
 
 
 @app.post("/v1/messages", response_model=None)
@@ -798,19 +868,16 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
 
     # Signed Anthropic blocks → surgical redaction on the raw bytes. A JSON
     # round-trip would break the block signatures, so eligible text spans are
-    # spliced out at the byte level, leaving signed regions untouched. If
-    # nothing redactable is found — or surgery is impossible — fall back to
-    # the original raw passthrough behaviour.
+    # spliced out at the byte level, leaving signed regions untouched.  With
+    # nothing to redact the original bytes go out unchanged; if the surgery
+    # itself fails the request is REFUSED (it used to be forwarded raw, i.e.
+    # unredacted, exactly when redaction was needed and impossible).
     if isinstance(body, dict) and _body_has_signed_blocks(body):
         pipeline._stats["requests"] += 1
-        gen = PlaceholderGenerator(session_tag=_placeholder_session_tag(body, pipeline))
-        surgical: RawRedaction | None = None
-        try:
-            surgical = await redact_signed_request(raw_body, pipeline.detect_spans, gen)
-        except SurgeryError as exc:
-            pipeline._stats["surgery_failed"] += 1
-            log_event("proxy_anthropic_surgery_failed", error=str(exc)[:200])
-        if surgical is not None and surgical.detections:
+        surgical = await _surgical_or_refusal(raw_body, body, pipeline)
+        if isinstance(surgical, JSONResponse):
+            return surgical
+        if surgical.detections:
             pipeline._stats["detections"] += len(surgical.detections)
             pipeline._stats["signed_surgical"] += 1
             if surgical.whole_token_fallbacks:
@@ -834,16 +901,8 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
                     return _upstream_transport_error(e, config.cloud_target)
                 if upstream.iterator is None:
                     return _plain_upstream_response(upstream)
-                # Same closure-narrowing dance as the chat path above.
-                iterator = upstream.iterator
-
-                async def stream_surgical() -> AsyncIterator[bytes]:
-                    async for chunk in iterator:
-                        yield restorer.feed_chunk(chunk)
-                    yield restorer.flush()
-
                 return StreamingResponse(
-                    _gate_2_anthropic(stream_surgical()),
+                    _gate_2_anthropic(_restored(upstream.iterator, restorer)),
                     media_type="text/event-stream",
                     headers={
                         "Cache-Control": "no-cache",
@@ -917,10 +976,9 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
 
     # Redact every model-visible string (one placeholder tag per upstream request).
     ph_tag = _placeholder_session_tag(body, pipeline)
-    gen = PlaceholderGenerator(session_tag=ph_tag)
-    outgoing, combined_reverse_map, all_detections = await _redact_anthropic_body(
-        body, pipeline, gen
-    )
+    scrub = pipeline.scrubber(ph_tag)
+    outgoing = await _redact_anthropic_body(body, scrub)
+    combined_reverse_map, all_detections = scrub.reverse_map, scrub.detections
 
     if pipeline.config.pipeline.opt_b_redact.strict:
         low_conf = [s for s in all_detections if s.confidence < 0.5]
@@ -1207,6 +1265,173 @@ def _summarize_detections(detections: list) -> list[dict[str, Any]]:
     return [{"kind": k, "count": v} for k, v in counts.items()]
 
 
+# --------------- Other OpenAI endpoints ---------------
+
+_HEADERS_NOT_FORWARDED = frozenset(
+    {
+        "host",
+        "transfer-encoding",
+        "connection",
+        "content-length",
+        "content-encoding",
+        "accept-encoding",
+    }
+)
+
+
+def _upstream_headers(request: Request) -> dict[str, str]:
+    """Inbound headers minus hop-by-hop ones (and accept-encoding, see chat_completions)."""
+    return {k: v for k, v in request.headers.items() if k.lower() not in _HEADERS_NOT_FORWARDED}
+
+
+async def _json_object(request: Request) -> dict[str, Any] | JSONResponse:
+    raw = await request.body()
+    try:
+        body = json.loads(raw) if raw else {}
+    except json.JSONDecodeError as e:
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"type": "invalid_request_error", "message": str(e)}},
+        )
+    if not isinstance(body, dict):
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"type": "invalid_request_error", "message": "expected an object"}},
+        )
+    return body
+
+
+def _strict_refusal(pipeline: OptionBPipeline, detections: list[Span]) -> JSONResponse | None:
+    if not pipeline.config.pipeline.opt_b_redact.strict:
+        return None
+    low_conf = [s for s in detections if s.confidence < 0.5]
+    if not low_conf:
+        return None
+    pipeline._stats["refusals"] += 1
+    return _refusal_response(RefusalError(reason="low_confidence_detection", spans=low_conf))
+
+
+async def _redacted_openai_call(
+    request: Request,
+    path: str,
+    outgoing: dict[str, Any],
+    scrub: RequestScrubber,
+    restore_body: Callable[[dict[str, Any], dict[str, str]], None] | None,
+    make_stream_restorer: Callable[[AsyncIterator[bytes]], AsyncIterator[bytes]] | None,
+) -> Response:
+    """Forward an already-redacted OpenAI request, restoring the response."""
+    pipeline, config = _get_pipeline(), _get_config()
+    pipeline._stats["requests"] += 1
+    pipeline._stats["detections"] += len(scrub.detections)
+    if refusal := _strict_refusal(pipeline, scrub.detections):
+        return refusal
+    headers = _upstream_headers(request)
+    if outgoing.get("stream") and make_stream_restorer is not None:
+        try:
+            upstream = await forward_chat_completion_stream(
+                outgoing, config.cloud_target, upstream_headers=headers, path=path
+            )
+        except httpx.HTTPError as e:
+            return _upstream_transport_error(e, config.cloud_target)
+        if upstream.iterator is None:
+            return _plain_upstream_response(upstream)
+        stream = make_stream_restorer(upstream.iterator) if scrub.reverse_map else upstream.iterator
+        gate = _gate_2_anthropic if path == "responses" else _gate_2_openai
+        return StreamingResponse(
+            gate(stream),
+            media_type="text/event-stream",
+            headers={"X-LLM-Redactor-Mode": "redacted"},
+        )
+    try:
+        response = await forward_openai_json(
+            path, outgoing, config.cloud_target, upstream_headers=headers
+        )
+    except httpx.HTTPStatusError as e:
+        return _upstream_status_response(e)
+    except httpx.HTTPError as e:
+        return _upstream_transport_error(e, config.cloud_target)
+    if restore_body is not None and scrub.reverse_map:
+        restore_body(response, scrub.reverse_map)
+    return JSONResponse(content=response, headers={"X-LLM-Redactor-Mode": "redacted"})
+
+
+@app.post("/v1/responses", response_model=None)
+async def openai_responses(request: Request) -> Response:
+    """OpenAI Responses API (Codex and newer OpenAI agents), redacted.
+
+    See transport/openai_responses.py for the scope.  This endpoint used to
+    fall through to the raw catch-all, i.e. upstream unredacted.
+    """
+    body = await _json_object(request)
+    if isinstance(body, JSONResponse):
+        return body
+    pipeline = _get_pipeline()
+    scrub = pipeline.scrubber(pipeline.request_placeholder_tag())
+    outgoing = await redact_responses_body(body, scrub)
+    return await _redacted_openai_call(
+        request,
+        "responses",
+        outgoing,
+        scrub,
+        restore_responses,
+        lambda it: _restored(it, ResponsesSSERestorer(scrub.reverse_map)),
+    )
+
+
+@app.post("/v1/completions", response_model=None)
+async def openai_completions(request: Request) -> Response:
+    """Legacy completions: ``prompt`` / ``suffix`` redacted, ``choices[].text`` restored."""
+    body = await _json_object(request)
+    if isinstance(body, JSONResponse):
+        return body
+    pipeline = _get_pipeline()
+    scrub = pipeline.scrubber(pipeline.request_placeholder_tag())
+    outgoing = dict(body)
+    prompt = body.get("prompt")
+    if isinstance(prompt, str):
+        outgoing["prompt"] = await scrub.text(prompt)
+    elif isinstance(prompt, list):  # strings, or token arrays (left alone)
+        outgoing["prompt"] = [await scrub.text(p) if isinstance(p, str) else p for p in prompt]
+    if isinstance(body.get("suffix"), str):
+        outgoing["suffix"] = await scrub.text(body["suffix"])
+
+    def restore_choices(response: dict[str, Any], reverse_map: dict[str, str]) -> None:
+        for choice in response.get("choices") or []:
+            if isinstance(choice, dict) and isinstance(choice.get("text"), str):
+                choice["text"] = restore(choice["text"], reverse_map)
+
+    return await _redacted_openai_call(
+        request,
+        "completions",
+        outgoing,
+        scrub,
+        restore_choices,
+        lambda it: _restore_openai_sse(it, scrub.reverse_map),
+    )
+
+
+@app.post("/v1/embeddings", response_model=None)
+async def openai_embeddings(request: Request) -> Response:
+    """Embeddings: the ``input`` strings are redacted before they are embedded.
+
+    Vectors of redacted text are what privacy requires here, but note the
+    semantic cost: ``⟨PERSON_1⟩`` is numbered per request, so the same name
+    embedded in two requests may get different placeholders.
+    """
+    body = await _json_object(request)
+    if isinstance(body, JSONResponse):
+        return body
+    pipeline = _get_pipeline()
+    scrub = pipeline.scrubber(None)
+    outgoing = dict(body)
+    value = body.get("input")
+    if isinstance(value, str):
+        outgoing["input"] = await scrub.text(value)
+    elif isinstance(value, list):  # strings, or token arrays (left alone)
+        outgoing["input"] = [await scrub.text(v) if isinstance(v, str) else v for v in value]
+    return await _redacted_openai_call(request, "embeddings", outgoing, scrub, None, None)
+
+
 @app.post("/v1/messages/count_tokens", response_model=None)
 async def anthropic_count_tokens(request: Request) -> Response:
     """Token counting, redacted exactly like ``/v1/messages``.
@@ -1227,18 +1452,15 @@ async def anthropic_count_tokens(request: Request) -> Response:
     pipeline = _get_pipeline()
     forward = raw
     if isinstance(body, dict):
-        gen = PlaceholderGenerator(session_tag=_placeholder_session_tag(body, pipeline))
         if _body_has_signed_blocks(body):
-            try:
-                surgical = await redact_signed_request(raw, pipeline.detect_spans, gen)
-                forward = surgical.new_raw
-            except SurgeryError as exc:
-                # Same fail-open trade-off as the signed /v1/messages path.
-                pipeline._stats["surgery_failed"] += 1
-                log_event("proxy_count_tokens_surgery_failed", error=str(exc)[:200])
+            surgical = await _surgical_or_refusal(raw, body, pipeline)
+            if isinstance(surgical, JSONResponse):
+                return surgical
+            forward = surgical.new_raw
         else:
-            outgoing, _, detections = await _redact_anthropic_body(body, pipeline, gen)
-            if detections:
+            scrub = pipeline.scrubber(_placeholder_session_tag(body, pipeline))
+            outgoing = await _redact_anthropic_body(body, scrub)
+            if scrub.detections:
                 forward = json.dumps(outgoing, ensure_ascii=False).encode("utf-8")
     return await _forward_raw(request, "v1/messages/count_tokens", forward)
 
@@ -1254,10 +1476,35 @@ async def raw_passthrough(request: Request, path: str) -> Response:
     bytes RAW to the upstream — no redaction, no JSON round-trip.  NOTE: that
     means any content-bearing endpoint without a route of its own here (e.g.
     OpenAI ``/v1/responses``, ``/v1/embeddings``, or a base URL missing its
-    ``/v1``) reaches the cloud unredacted; responses carry
-    ``X-LLM-Redactor-Mode: raw-passthrough`` so that is at least visible.
+    ``/v1``) would reach the cloud unredacted.  So requests that carry a
+    body are refused unless ``transport.unknown_path_policy: forward``;
+    bodiless ones (``GET /v1/models``) are forwarded, marked
+    ``X-LLM-Redactor-Mode: raw-passthrough``.
     """
-    return await _forward_raw(request, path, await request.body())
+    body = await request.body()
+    if body and _get_config().transport.unknown_path_policy == "refuse":
+        log_event("proxy_unknown_path_refused", method=request.method)
+        return _unknown_path_refusal(path)
+    return await _forward_raw(request, path, body)
+
+
+_ROUTED = ("chat/completions", "completions", "embeddings", "responses", "messages")
+
+
+def _unknown_path_refusal(path: str) -> JSONResponse:
+    message = (
+        f"llm-redactor has no redaction route for /{path}, so the request was not "
+        "forwarded (set transport.unknown_path_policy: forward to send such "
+        "requests raw, unredacted)."
+    )
+    if path.rstrip("/").endswith(_ROUTED) and not path.startswith("v1/"):
+        message += " This looks like a client base URL missing its /v1."
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": {"type": "redactor_refused", "reason": "unknown_path", "message": message}
+        },
+    )
 
 
 async def _forward_raw(request: Request, path: str, content: bytes) -> Response:

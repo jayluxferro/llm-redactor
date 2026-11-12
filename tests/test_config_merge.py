@@ -97,7 +97,7 @@ def test_unknown_config_keys_are_logged_not_silently_dropped(tmp_path, caplog) -
     messages = " ".join(r.getMessage() for r in caplog.records)
     assert "transport.tool_policy" in messages  # the typo is named
     assert "policy should be a mapping" in messages
-    assert cfg.transport.tools_policy == "bypass"  # still loads, defaults intact
+    assert cfg.transport.tools_policy == "redact"  # still loads, defaults intact
 
 
 def test_unknown_tools_policy_fails_at_load(tmp_path, monkeypatch) -> None:

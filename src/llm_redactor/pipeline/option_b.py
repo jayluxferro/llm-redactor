@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import secrets
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -14,7 +15,7 @@ from ..detect.orchestrator import detect_candidates, detect_validated, finalize_
 from ..detect.types import Span
 from ..observability import log_event
 from ..redact.placeholder import PlaceholderGenerator, RedactionResult, redact
-from ..redact.restore import restore
+from ..redact.restore import restore, restore_in_json_text
 from ..transport.cloud import forward_chat_completion
 
 
@@ -129,13 +130,24 @@ class OptionBPipeline:
             _cache_detect(key, spans)
         return finalize_spans(spans, self.config.policy.categories)
 
+    def scrubber(self, session_tag: str | None) -> RequestScrubber:
+        """A scrubber for one upstream request (one placeholder namespace)."""
+        return RequestScrubber(self, PlaceholderGenerator(session_tag=session_tag))
+
     async def redact_chat_messages(
         self,
         messages: list[dict[str, Any]],
         *,
         session_tag: str | None | _SessionTagUnset = _SESSION_TAG_UNSET,
-    ) -> tuple[list[dict[str, Any]], dict[int, RedactionResult], list[Span], str | None]:
-        """Detect/redact string ``content`` for each message.
+    ) -> tuple[list[dict[str, Any]], RequestScrubber, str | None]:
+        """Redact every model-visible string of OpenAI-format messages.
+
+        Covers string content, ``text`` content parts, ``tool`` / ``function``
+        role results, assistant ``tool_calls[].function.arguments`` and the
+        legacy ``function_call``.  Tool-bearing requests used to bypass the
+        pipeline entirely (``tools_policy: bypass`` was the default), so most
+        agent traffic on this path went out unredacted; tool *schemas*
+        (``tools`` / ``functions``) are still forwarded untouched.
 
         If ``session_tag`` is omitted, a new tag is generated when
         ``placeholder_request_tag`` is enabled. Pass an explicit tag (or
@@ -145,57 +157,31 @@ class OptionBPipeline:
             placeholder_tag = self.request_placeholder_tag()
         else:
             placeholder_tag = cast(str | None, session_tag)
-        outgoing = list(messages)
-        redaction_results: dict[int, RedactionResult] = {}
-        all_detections: list[Span] = []
-        gen = PlaceholderGenerator(session_tag=placeholder_tag)
+        scrub = self.scrubber(placeholder_tag)
+        outgoing = [
+            await self._redact_message(msg, scrub) if isinstance(msg, dict) else msg
+            for msg in messages
+        ]
+        return outgoing, scrub, placeholder_tag
 
-        for i, msg in enumerate(messages):
-            content = msg.get("content", "")
-            if isinstance(content, str) and content:
-                spans = await self.detect_spans(content)
-                all_detections.extend(spans)
-                if spans:
-                    result = redact(content, spans, gen=gen)
-                    redaction_results[i] = result
-                    outgoing[i] = {**msg, "content": result.redacted_text}
-            elif isinstance(content, list):
-                # Content parts ([{"type": "text", "text": ...}, {"type":
-                # "image_url", ...}]): what multimodal and most current SDK
-                # clients send.  These used to be skipped entirely, i.e.
-                # forwarded unredacted.
-                parts, merged = await self._redact_parts(content, gen, all_detections)
-                if merged is not None:
-                    redaction_results[i] = merged
-                    outgoing[i] = {**msg, "content": parts}
-
-        return outgoing, redaction_results, all_detections, placeholder_tag
-
-    async def _redact_parts(
-        self, parts: list[Any], gen: PlaceholderGenerator, detections: list[Span]
-    ) -> tuple[list[Any], RedactionResult | None]:
-        """Redact the ``text`` parts of a content list; others pass unchanged."""
-        out: list[Any] = []
-        merged: RedactionResult | None = None
-        for part in parts:
-            text = part.get("text") if isinstance(part, dict) else None
-            if not (isinstance(part, dict) and part.get("type") == "text" and text):
-                out.append(part)
-                continue
-            spans = await self.detect_spans(text)
-            detections.extend(spans)
-            if not spans:
-                out.append(part)
-                continue
-            result = redact(text, spans, gen=gen)
-            out.append({**part, "text": result.redacted_text})
-            if merged is None:
-                merged = RedactionResult("", {}, [])
-            merged.reverse_map.update(result.reverse_map)
-            merged.placeholders.extend(result.placeholders)
-        if merged is not None:
-            merged.redacted_text = "\n".join(_message_text(p) for p in out)
-        return out, merged
+    async def _redact_message(self, msg: dict[str, Any], scrub: RequestScrubber) -> dict[str, Any]:
+        tool_role = msg.get("role") in ("tool", "function")
+        out = dict(msg)
+        content = msg.get("content")
+        if isinstance(content, str):
+            out["content"] = await scrub.text(content, tool_content=tool_role)
+        elif isinstance(content, list):
+            # Content parts ([{"type": "text", ...}, {"type": "image_url", ...}]),
+            # what multimodal and most current SDK clients send.
+            out["content"] = [await scrub.part(part, tool_content=tool_role) for part in content]
+        calls = msg.get("tool_calls")
+        if isinstance(calls, list):
+            out["tool_calls"] = [await scrub.tool_call(call) for call in calls]
+        legacy = msg.get("function_call")
+        if isinstance(legacy, dict) and isinstance(legacy.get("arguments"), str):
+            arguments = await scrub.json_text(legacy["arguments"])
+            out["function_call"] = {**legacy, "arguments": arguments}
+        return out if out != msg else msg
 
     async def run(
         self,
@@ -210,13 +196,8 @@ class OptionBPipeline:
         self._stats["requests"] += 1
 
         messages = body.get("messages", [])
-
-        (
-            outgoing_messages,
-            redaction_results,
-            all_detections,
-            ph_tag,
-        ) = await self.redact_chat_messages(messages)
+        outgoing_messages, scrub, ph_tag = await self.redact_chat_messages(messages)
+        all_detections = scrub.detections
 
         log_event(
             "pipeline_redact_prepared",
@@ -253,32 +234,21 @@ class OptionBPipeline:
             upstream_headers=upstream_headers,
         )
 
-        # Build the combined reverse map from all redacted messages.
-        combined_reverse_map: dict[str, str] = {}
-        combined_redaction: RedactionResult | None = None
-        for rr in redaction_results.values():
-            combined_reverse_map.update(rr.reverse_map)
-        if combined_reverse_map and redaction_results:
-            first = next(iter(redaction_results.values()))
-            combined_redaction = first
-
-        # Restore placeholders in the response content.
-        if combined_reverse_map and "choices" in cloud_response:
-            for choice in cloud_response["choices"]:
-                msg = choice.get("message", {})
-                content = msg.get("content", "")
-                if content:
-                    msg["content"] = restore(content, combined_reverse_map)
+        # Restore placeholders in the response: text and tool-call arguments.
+        if scrub.reverse_map:
+            for choice in cloud_response.get("choices") or []:
+                if isinstance(choice, dict) and isinstance(choice.get("message"), dict):
+                    restore_openai_message(choice["message"], scrub.reverse_map)
 
         # Leak audit: after redaction the original span text should never
         # appear in the outgoing body. Non-zero = redaction failure.
-        outgoing_text = " ".join(_message_text(m.get("content")) for m in outgoing_messages)
+        outgoing_text = "\n".join(_strings(outgoing_messages))
         survived = sum(1 for s in all_detections if s.text in outgoing_text)
 
         return PipelineResult(
             response=cloud_response,
             detections=all_detections,
-            redaction=combined_redaction,
+            redaction=scrub.result(outgoing_text) if scrub.reverse_map else None,
             options_applied=["B"],
             leak_audit={
                 "outgoing_bytes": len(outgoing_text.encode()),
@@ -288,16 +258,106 @@ class OptionBPipeline:
         )
 
 
-def _message_text(content: Any) -> str:
-    """The text of a string ``content``, a text part, or a list of parts."""
+class RequestScrubber:
+    """Redacts the strings of ONE upstream request.
+
+    One placeholder generator per request keeps a value's placeholder the same
+    everywhere it appears (system prompt, a tool result, a later tool call),
+    and the accumulated reverse map is what restores the response.
+    """
+
+    def __init__(self, pipeline: OptionBPipeline, gen: PlaceholderGenerator) -> None:
+        self._pipeline = pipeline
+        self._gen = gen
+        self.reverse_map: dict[str, str] = {}
+        self.placeholders: list[str] = []
+        self.detections: list[Span] = []
+
+    async def text(self, text: str, *, tool_content: bool = False) -> str:
+        if not text:
+            return text
+        spans = await self._pipeline.detect_spans(text, tool_content=tool_content)
+        if not spans:
+            return text
+        self.detections.extend(spans)
+        result = redact(text, spans, gen=self._gen)
+        self.reverse_map.update(result.reverse_map)
+        self.placeholders.extend(result.placeholders)
+        return result.redacted_text
+
+    async def json_value(self, value: Any, *, tool_content: bool = True) -> Any:
+        """Every string inside decoded JSON (tool inputs), structure untouched."""
+        if isinstance(value, str):
+            return await self.text(value, tool_content=tool_content)
+        if isinstance(value, list):
+            return [await self.json_value(v, tool_content=tool_content) for v in value]
+        if isinstance(value, dict):
+            items = value.items()
+            return {k: await self.json_value(v, tool_content=tool_content) for k, v in items}
+        return value
+
+    async def json_text(self, raw: str, *, tool_content: bool = True) -> str:
+        """Redact the string values inside JSON *text* (tool-call ``arguments``).
+
+        Decoded first, so a span can never cut through JSON syntax or an
+        escape sequence; unchanged arguments keep their exact bytes.  Text
+        that is not valid JSON is redacted as plain text.
+        """
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            return await self.text(raw, tool_content=tool_content)
+        redacted = await self.json_value(value, tool_content=tool_content)
+        return raw if redacted == value else json.dumps(redacted, ensure_ascii=False)
+
+    async def part(self, part: Any, *, tool_content: bool = False) -> Any:
+        """A content part: ``text`` (chat) or ``input_text``/``output_text`` (responses)."""
+        if (
+            isinstance(part, dict)
+            and part.get("type") in ("text", "input_text", "output_text")
+            and isinstance(part.get("text"), str)
+        ):
+            return {**part, "text": await self.text(part["text"], tool_content=tool_content)}
+        return part
+
+    async def tool_call(self, call: Any) -> Any:
+        function = call.get("function") if isinstance(call, dict) else None
+        if isinstance(function, dict) and isinstance(function.get("arguments"), str):
+            arguments = await self.json_text(function["arguments"])
+            return {**call, "function": {**function, "arguments": arguments}}
+        return call
+
+    def result(self, redacted_text: str) -> RedactionResult:
+        return RedactionResult(redacted_text, dict(self.reverse_map), list(self.placeholders))
+
+
+def restore_openai_message(message: dict[str, Any], reverse_map: dict[str, str]) -> None:
+    """Restore placeholders in a chat-completion message, in place."""
+    content = message.get("content")
     if isinstance(content, str):
-        return content
-    if isinstance(content, dict):
-        text = content.get("text")
-        return text if content.get("type") == "text" and isinstance(text, str) else ""
-    if isinstance(content, list):
-        return " ".join(_message_text(p) for p in content)
-    return ""
+        message["content"] = restore(content, reverse_map)
+    elif isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                part["text"] = restore(part["text"], reverse_map)
+    for call in message.get("tool_calls") or []:
+        function = call.get("function") if isinstance(call, dict) else None
+        if isinstance(function, dict) and isinstance(function.get("arguments"), str):
+            function["arguments"] = restore_in_json_text(function["arguments"], reverse_map)
+    legacy = message.get("function_call")
+    if isinstance(legacy, dict) and isinstance(legacy.get("arguments"), str):
+        legacy["arguments"] = restore_in_json_text(legacy["arguments"], reverse_map)
+
+
+def _strings(value: Any) -> list[str]:
+    """Every string inside a JSON-like value (for the leak audit)."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [s for v in value for s in _strings(v)]
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _strings(v)]
+    return []
 
 
 class RefusalError(Exception):

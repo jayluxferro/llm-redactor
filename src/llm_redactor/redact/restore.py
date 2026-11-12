@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from typing import Any
 
@@ -23,6 +24,40 @@ def restore(text: str, reverse_map: dict[str, str]) -> str:
     for placeholder, original in reverse_map.items():
         result = result.replace(placeholder, original)
     return result
+
+
+def json_fragment(text: str) -> str:
+    """``text`` as it must appear inside a JSON string literal (no quotes)."""
+    return json.dumps(text, ensure_ascii=False)[1:-1]
+
+
+def restore_in_json_text(json_text: str, reverse_map: dict[str, str]) -> str:
+    """Restore placeholders inside JSON *text* (e.g. tool-call ``arguments``).
+
+    Complete JSON is decoded, restored value by value and re-encoded, which is
+    immune to how the producer escaped it: ``json.dumps`` writes ``⟨`` as
+    ``\\u27e8`` by default, so plain text replacement silently missed those.
+    Unchanged JSON keeps its exact bytes.  Anything that does not parse (a
+    fragment) gets text replacement of both spellings, with each original
+    JSON-escaped so a quote or newline in it cannot end the string literal.
+    """
+    if not reverse_map:
+        return json_text
+    try:
+        value = json.loads(json_text)
+    except ValueError:
+        mapping: dict[str, str] = {}
+        for placeholder, original in reverse_map.items():
+            escaped = json_fragment(original)
+            mapping[placeholder] = escaped
+            ascii_form = json.dumps(placeholder)[1:-1]  # ⟨KIND_1⟩
+            mapping[ascii_form] = escaped
+            mapping[ascii_form.replace("\\u27e8", "\\u27E8").replace("\\u27e9", "\\u27E9")] = (
+                escaped
+            )
+        return restore(json_text, mapping)
+    restored = restore_json(value, reverse_map)
+    return json_text if restored == value else json.dumps(restored, ensure_ascii=False)
 
 
 def restore_json(value: Any, reverse_map: dict[str, str]) -> Any:

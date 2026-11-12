@@ -91,29 +91,34 @@ class StreamResult:
     iterator: AsyncIterator[bytes] | None = None
 
 
-async def forward_chat_completion(
+def _openai_headers(
+    config: CloudTargetConfig, upstream_headers: dict[str, str] | None
+) -> dict[str, str]:
+    """Forwarded headers + JSON content type + the env API key if none was sent."""
+    headers: dict[str, str] = dict(upstream_headers) if upstream_headers else {}
+    headers["content-type"] = "application/json"
+    api_key = os.environ.get(config.api_key_env, "")
+    if api_key and "authorization" not in {k.lower() for k in headers}:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
+async def forward_openai_json(
+    path: str,
     body: dict[str, Any],
     config: CloudTargetConfig,
     *,
     timeout: httpx.Timeout = DEFAULT_UPSTREAM_TIMEOUT,
     upstream_headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Forward an OpenAI-compatible chat completion request to the cloud target.
+    """POST an (already redacted) JSON body to ``<endpoint>/<path>``.
 
-    Returns the parsed JSON response.
-    Raises httpx.HTTPStatusError on non-2xx responses.
+    Returns the parsed JSON response; raises httpx.HTTPStatusError on non-2xx.
     """
-    api_key = os.environ.get(config.api_key_env, "")
-    url = f"{config.endpoint.rstrip('/')}/chat/completions"
-
-    headers: dict[str, str] = dict(upstream_headers) if upstream_headers else {}
-    headers["content-type"] = "application/json"
-    if api_key and "authorization" not in headers:
-        headers["Authorization"] = f"Bearer {api_key}"
-
+    url = f"{config.endpoint.rstrip('/')}/{path}"
+    headers = _openai_headers(config, upstream_headers)
     # The caller's user-agent (if any) stays in the request headers so the
-    # shared client never has to hold per-request state; when absent, httpx
-    # supplies its own default, exactly as before.
+    # shared client never has to hold per-request state.
     #
     # Retry: safe here — nothing has been handed back to the client yet, and
     # `body` is the *already redacted* request, so re-sending cannot
@@ -121,10 +126,23 @@ async def forward_chat_completion(
     # outside the retried region, so status errors are never re-sent.
     resp = await retry_upstream(
         lambda: get_client().post(url, json=body, headers=headers, timeout=timeout),
-        operation="openai chat completion",
+        operation=f"openai {path}",
     )
     resp.raise_for_status()
     return _parse_json_response(resp, url)
+
+
+async def forward_chat_completion(
+    body: dict[str, Any],
+    config: CloudTargetConfig,
+    *,
+    timeout: httpx.Timeout = DEFAULT_UPSTREAM_TIMEOUT,
+    upstream_headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Forward an OpenAI-compatible chat completion request to the cloud target."""
+    return await forward_openai_json(
+        "chat/completions", body, config, timeout=timeout, upstream_headers=upstream_headers
+    )
 
 
 def _parse_json_response(resp: httpx.Response, url: str) -> dict[str, Any]:
@@ -150,13 +168,10 @@ def _build_openai_request(
     upstream_headers: dict[str, str] | None = None,
     *,
     timeout: httpx.Timeout = DEFAULT_UPSTREAM_TIMEOUT,
+    path: str = "chat/completions",
 ) -> httpx.Request:
-    url = f"{config.endpoint.rstrip('/')}/chat/completions"
-    headers: dict[str, str] = dict(upstream_headers) if upstream_headers else {}
-    headers["content-type"] = "application/json"
-    api_key = os.environ.get(config.api_key_env, "")
-    if api_key and "authorization" not in headers:
-        headers["Authorization"] = f"Bearer {api_key}"
+    url = f"{config.endpoint.rstrip('/')}/{path}"
+    headers = _openai_headers(config, upstream_headers)
     return client.build_request("POST", url, json=body, headers=headers, timeout=timeout)
 
 
@@ -233,16 +248,20 @@ async def forward_chat_completion_stream(
     *,
     timeout: httpx.Timeout = DEFAULT_UPSTREAM_TIMEOUT,
     upstream_headers: dict[str, str] | None = None,
+    path: str = "chat/completions",
 ) -> StreamResult:
-    """Forward a streaming chat completion request and return a preflight result.
+    """Forward a streaming OpenAI request and return a preflight result.
 
     Gate 1: opens the upstream stream and returns either a faithful plain
     response (for non-2xx or non-SSE upstreams) or an iterator of raw SSE
     chunks.  The caller commits to ``text/event-stream`` only after this check.
+    ``path`` selects the endpoint (``completions``, ``responses``, ...).
     """
     resp = await _send_streaming_preflight(
-        lambda c: _build_openai_request(c, body, config, upstream_headers, timeout=timeout),
-        operation="openai chat completion stream",
+        lambda c: _build_openai_request(
+            c, body, config, upstream_headers, timeout=timeout, path=path
+        ),
+        operation=f"openai {path} stream",
     )
     content_type = resp.headers.get("content-type")
     if resp.status_code >= 400 or "text/event-stream" not in (content_type or ""):

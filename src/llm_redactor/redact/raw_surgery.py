@@ -28,7 +28,7 @@ from ..detect.types import Span
 from ..observability import log_event
 from .placeholder import PREFIX as PH_PREFIX
 from .placeholder import SUFFIX as PH_SUFFIX
-from .restore import MAX_PLACEHOLDER_LEN, StreamRestorer
+from .restore import MAX_PLACEHOLDER_LEN, StreamRestorer, json_fragment
 
 __all__ = ["MAX_PLACEHOLDER_LEN"]  # re-exported: older callers import it from here
 
@@ -441,13 +441,17 @@ async def redact_signed_request(
     raw: bytes,
     detect_spans: Callable[[str], Awaitable[list[Span]]],
     gen,
+    *,
+    tool_detect_spans: Callable[[str], Awaitable[list[Span]]] | None = None,
 ) -> RawRedaction:
     """Surgically redact eligible text in a signed-block request body.
 
     Detection runs on decoded values; replacements are spliced into the raw
     bytes so ``thinking`` / ``redacted_thinking`` / ``signature`` regions stay
     byte-identical.  Tokens whose offsets cannot be mapped precisely (exotic
-    escape sequences) fall back to whole-value replacement.
+    escape sequences) fall back to whole-value replacement.  Strings inside
+    ``tool_result`` / ``tool_use`` blocks go to ``tool_detect_spans`` when
+    given (the tool-content detector, see ``pipeline.tool_content_ner``).
     """
     result = RawRedaction(new_raw=raw)
     tokens = index_string_tokens(raw)
@@ -456,7 +460,9 @@ async def redact_signed_request(
     for tok in tokens:
         if not _is_redactable(tok, types):
             continue
-        spans = await detect_spans(tok.value)
+        in_tool = len(tok.path) > 4 and types.get(tok.path[:4]) in ("tool_result", "tool_use")
+        detector = tool_detect_spans if (in_tool and tool_detect_spans) else detect_spans
+        spans = await detector(tok.value)
         if not spans:
             continue
         result.detections.extend(spans)
@@ -568,12 +574,8 @@ def restore_response_bytes(raw: bytes, reverse_map: dict[str, str]) -> bytes:
 
 # Delta types whose payload is model output we may rewrite, and the field
 # carrying it.  ``input_json_delta`` is a fragment of a tool call's JSON input,
-# so originals spliced into it must be JSON-escaped (``_json_fragment``).
+# so originals spliced into it must be JSON-escaped (``json_fragment``).
 _DELTA_FIELDS = {"text_delta": "text", "input_json_delta": "partial_json"}
-
-
-def _json_fragment(text: str) -> str:
-    return json.dumps(text, ensure_ascii=False)[1:-1]
 
 
 class SSETextRestorer:
@@ -643,7 +645,7 @@ class SSETextRestorer:
     def _restorer(self, index: int, delta_type: str) -> StreamRestorer:
         entry = self._blocks.get(index)
         if entry is None:
-            escape = _json_fragment if delta_type == "input_json_delta" else None
+            escape = json_fragment if delta_type == "input_json_delta" else None
             entry = (delta_type, StreamRestorer(self._map, escape=escape))
             self._blocks[index] = entry
         return entry[1]

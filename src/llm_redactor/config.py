@@ -165,9 +165,18 @@ class TransportConfig:
     mcp: bool = True
     http: bool = True
     http_port: int = 7789
-    # bypass: forward tool/function calls without redaction (default).
-    # refuse: reject with 422 so nothing hits the cloud without redaction.
-    tools_policy: str = "bypass"
+    # OpenAI-format requests that carry `tools` / `functions`:
+    #   redact (default): redact messages, tool results and tool-call
+    #     arguments like any request; tool schemas are forwarded untouched.
+    #   refuse: reject with 422.
+    #   bypass: forward unredacted (the old default: most agent traffic).
+    tools_policy: str = "redact"
+    # Requests WITH A BODY to a path the proxy has no route for (anything but
+    # chat/completions, completions, embeddings, responses, messages and
+    # count_tokens):
+    #   refuse (default): 422, nothing is sent; forward: send raw, unredacted.
+    # Bodiless requests (GET /v1/models, ...) are always forwarded.
+    unknown_path_policy: str = "refuse"
     # Cap in-memory MCP scrub sessions (oldest evicted; restore then fails safely).
     mcp_session_cap: int = 10_000
 
@@ -239,6 +248,8 @@ def _env_overrides(config: Config) -> Config:
         config.pipeline.placeholder_request_tag = True
     if ep := os.environ.get("LLM_REDACTOR_TOOLS_POLICY"):
         config.transport.tools_policy = ep.strip().lower()
+    if ep := os.environ.get("LLM_REDACTOR_UNKNOWN_PATH_POLICY"):
+        config.transport.unknown_path_policy = ep.strip().lower()
     if ep := os.environ.get("LLM_REDACTOR_MCP_SESSION_CAP"):
         config.transport.mcp_session_cap = int(ep)
     return config
@@ -264,24 +275,28 @@ def _validate_api_key_env(config: Config) -> None:
         )
 
 
-_TOOLS_POLICIES = frozenset({"bypass", "refuse"})
+_CHOICES: dict[str, frozenset[str]] = {
+    "tools_policy": frozenset({"redact", "refuse", "bypass"}),
+    "unknown_path_policy": frozenset({"refuse", "forward"}),
+}
 
 
-def _validate_tools_policy(config: Config) -> None:
-    """Fail at load on an unknown tools_policy.
+def _validate_transport_choices(config: Config) -> None:
+    """Fail at load on an unknown policy value.
 
-    The proxy compares against "refuse" only, so any other value, including a
-    typo of "refuse", meant bypass: tool-bearing requests forwarded
-    unredacted.  Same fail-at-load rule as LLMValidationConfig.backend.
+    These used to be compared against one value only ("refuse"), so any
+    other value, including a typo of it, silently selected the permissive
+    branch.  Same fail-at-load rule as LLMValidationConfig.backend.
     """
-    policy = config.transport.tools_policy
-    if policy not in _TOOLS_POLICIES:
-        raise ValueError(f"transport.tools_policy must be 'bypass' or 'refuse', got {policy!r}")
+    for name, allowed in _CHOICES.items():
+        value = getattr(config.transport, name)
+        if value not in allowed:
+            raise ValueError(f"transport.{name} must be one of {sorted(allowed)}, got {value!r}")
 
 
 def _validate(config: Config) -> Config:
     _validate_api_key_env(config)
-    _validate_tools_policy(config)
+    _validate_transport_choices(config)
     return config
 
 
