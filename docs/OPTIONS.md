@@ -40,7 +40,7 @@ normal laptop is meaningfully weaker than frontier cloud models.
 1. Local NER + regex detector finds sensitive spans in the outgoing
    request.
 2. Each span is replaced with a typed placeholder
-   (`{PERSON_1}`, `{EMAIL_2}`, `{API_KEY_3}`, `{ORG_1}`).
+   (`⟨PERSON_1⟩`, `⟨EMAIL_2⟩`, `⟨GENERIC_API_KEY_3⟩`, `⟨ORG_NAME_1⟩`).
 3. The redacted request goes to the cloud.
 4. On the response, placeholders are replaced back with the originals
    from an in-memory map.
@@ -76,9 +76,9 @@ actual identifier. "Explain this Python script" works; "look up user
 - Detector misses a non-standard identifier (e.g. "the CFO's wife",
   which is identifying but not a PII pattern).
 - Cloud model's response references a placeholder the restorer
-  doesn't recognise (e.g. the model paraphrases `{PERSON_1}` as
+  doesn't recognise (e.g. the model paraphrases `⟨PERSON_1⟩` as
   "the person"). The restorer must leave those untouched.
-- Placeholder collision: `{PERSON_1}` happens to appear in the
+- Placeholder collision: `⟨PERSON_1⟩` happens to appear in the
   original text. Use a random suffix or a rare Unicode marker.
 
 ### Threat model caveat
@@ -120,7 +120,7 @@ needed. A validator step checks that key technical terms survive.
   rewrite clumsily.
 - Run a validator: given the rewritten prompt, can the original
   question still be answered? If not, roll back the rewrite.
-- Record every rewrite in `runs.jsonl` for audit.
+- Record every rewrite for audit (not implemented: nothing writes a run log today).
 
 ### Failure modes
 - Rephrase model hallucinates new details that weren't in the

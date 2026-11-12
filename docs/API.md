@@ -32,7 +32,7 @@ the session (one-shot).
 ### `redact.detect`
 
 Dry-run detection. Optional: `use_ner`, `use_llm_validation` (per-call override).
-Returns a JSON list of span objects (offsets, kind, confidence, source).
+Returns `{"spans": [...]}`: span objects with offsets, kind, confidence, text, source.
 
 ### `redact.stats`
 
@@ -44,7 +44,9 @@ Process-wide counters (`requests`, `detections`, `restores`, `llm_calls`).
 
 ### `POST /v1/chat/completions`
 
-OpenAI-compatible. Point `OPENAI_API_BASE` at `http://localhost:<port>/v1`.
+OpenAI-compatible. Point the client's base URL (`OPENAI_BASE_URL` for openai-python ≥ 1)
+at `http://localhost:<port>/v1`. It must end in `/v1`: without it, requests land on the
+raw-passthrough catch-all and are forwarded **unredacted**.
 
 **Response headers**
 
@@ -53,6 +55,7 @@ OpenAI-compatible. Point `OPENAI_API_BASE` at `http://localhost:<port>/v1`.
 | `X-LLM-Redactor-Mode: redacted` | Normal path (redaction applied) |
 | `X-LLM-Redactor-Mode: bypass-tools` | Request included `tools` or `functions` and `transport.tools_policy` is `bypass` |
 | `X-LLM-Redactor-Bypass-Reason: tools-or-functions` | Same as bypass-tools |
+| `X-LLM-Redactor-Mode: raw-passthrough` | Any path without its own route (catch-all): forwarded unredacted |
 
 **Tool / function calls**
 
@@ -80,19 +83,36 @@ Standard OpenAI chat completion plus:
     "leak_audit": {
       "outgoing_bytes": 1840,
       "sensitive_tokens_detected": 3,
-      "sensitive_tokens_sent": 0
+      "original_span_text_survived": 0
     }
   }
 }
 ```
 
 Streaming (`stream: true`) uses the same redaction path; placeholders are restored in
-SSE `delta.content` chunks before they reach the client.
+SSE `delta.content` chunks before they reach the client, including placeholders the model
+streams across several deltas. Message `content` may be a string or a list of content
+parts; `text` parts are redacted, other parts (images) pass through.
 
 ### `POST /v1/messages`
 
-Anthropic Messages API shape: redacts string or text-block content, forwards to
-`cloud_target`, restores in the response. `stream` is forced off in this handler.
+Anthropic Messages API shape. Redacts `system` (string or text blocks) and, in every
+message, string content, `text` blocks, `tool_result` content, every string inside
+`tool_use` inputs, and text `document` sources. Forwards to `cloud_target` and restores
+placeholders in the response's text and `tool_use` inputs, both for `stream: false` and
+for SSE (`text_delta` and `input_json_delta`, JSON-escaped). Response JSON carries a
+`redactor` object (options applied, detection counts) but no `leak_audit`.
+
+Requests containing signed `thinking` / `redacted_thinking` blocks are redacted surgically
+on the raw bytes, so the signatures stay valid; the header is then
+`X-LLM-Redactor-Mode: signed-surgical`. If nothing needs redacting, or the surgery fails,
+the original bytes are forwarded with `X-LLM-Redactor-Mode: signed-passthrough`.
+Content inside the signed blocks themselves is never modified.
+
+### `POST /v1/messages/count_tokens`
+
+Redacted exactly like `/v1/messages` (the body is the same conversation), then forwarded.
+Bodies with nothing to redact are forwarded byte-identical.
 
 ### `POST /v1/redactor/detect`
 
@@ -103,30 +123,32 @@ the detected spans without redacting or forwarding anything.
 **Request**
 
 ```json
-{"text": "Call Alice at alice@example.com — her key is sk-proj-abc123..."}
+{"text": "Call Alice Johnson at alice@example.com about the Q3 audit"}
 ```
 
-**Response** — array of span objects:
+**Response**: an array of span objects (real output with NER on; kinds are lower-case,
+see the README taxonomy):
 
 ```json
 [
-  {"start": 9,  "end": 26, "kind": "email",         "confidence": 1.0,  "text": "alice@example.com",   "source": "regex"},
-  {"start": 43, "end": 63, "kind": "openai_api_key", "confidence": 1.0,  "text": "sk-proj-abc123...",   "source": "regex"},
-  {"start": 0,  "end": 5,  "kind": "PERSON",         "confidence": 0.91, "text": "Alice",               "source": "ner"}
+  {"start": 5,  "end": 18, "kind": "person", "confidence": 0.85, "text": "Alice Johnson",     "source": "ner"},
+  {"start": 22, "end": 39, "kind": "email",  "confidence": 1.0,  "text": "alice@example.com", "source": "regex"}
 ]
 ```
 
 Empty text → `[]` (HTTP 200).
 
-**Primary use-case — Burp plugin NER endpoint**
+### `POST /v1/redactor/detect-batch`
 
-Point the Burp plugin's **NER endpoint** field at:
-```
-http://localhost:7789/v1/redactor/detect
-```
+`{"texts": ["first", "second"]}` → `{"items": [[span, ...], [span, ...]]}`, at most 1,000
+fragments. This is what the Burp plugin calls (it has no configurable endpoint field; the
+URL is fixed to `http://127.0.0.1:7789/v1/redactor/detect-batch`).
 
-The plugin will POST each text field to this URL and merge the returned spans
-with its own regex results before redacting.
+### `POST /v1/redactor/redact-image`
+
+JPEG or PNG body in, the same media type out with opaque boxes over detected regions
+(`X-LLM-Redactor-Detections` gives the count). Returns 503 when image redaction is not
+configured (see `pipeline.image_redaction`).
 
 ### `GET /v1/redactor/stats`
 

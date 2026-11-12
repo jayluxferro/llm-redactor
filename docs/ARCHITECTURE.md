@@ -71,16 +71,21 @@ Two parallel interfaces:
 
 1. **MCP server (stdio)** — `llm.chat`, `redact.scrub`, `redact.restore`,
    `redact.detect`, `redact.stats`.
-2. **HTTP proxy** (`POST /v1/chat/completions`) — OpenAI-compatible.
-   Points `OPENAI_API_BASE` at `http://localhost:<port>` and the
-   agent's cloud calls transparently go through the redactor.
+2. **HTTP proxy**: `POST /v1/chat/completions` (OpenAI-compatible; point
+   the client's base URL at `http://localhost:<port>/v1`, and note the
+   `/v1`) and `POST /v1/messages` + `/v1/messages/count_tokens` (Anthropic;
+   `ANTHROPIC_BASE_URL=http://localhost:<port>`). Any other path is
+   forwarded raw, unredacted (`X-LLM-Redactor-Mode: raw-passthrough`).
 
 ## Core components
 
 ### 1. Detector (`src/llm_redactor/detect/`)
 
-- `regex.py` — pattern families from `docs/POLICY.md` (inherited
-  from `resilient-write`).
+- `regex.py`: pattern families (secrets, structured PII), plus checksum
+  filters from `checksums.py`; custom patterns via
+  `policy.extend_patterns_file`.
+- `wallets.py`: blockchain addresses, public/private keys and BIP-39
+  seed phrases, classified by decoding each candidate.
 - `ner.py` — `presidio` or a small local NER model for
   PII detection.
 - `llm_validator.py` — optional local LLM (Ollama) batch validation of
@@ -183,13 +188,17 @@ vendor_api_key, private_key; `org_identifier` → infrastructure;
 
 ```
 .llm_redactor/
-├── runs.jsonl           # one row per request, for audit + eval
-├── patterns.yaml        # workspace-local pattern overrides
-└── leak_metrics.jsonl   # test results
+└── patterns.yaml        # workspace-local pattern overrides (policy.extend_patterns_file)
 ```
 
+(Nothing writes per-request audit rows: the proxy logs counts-only JSON
+events on the `llm_redactor` logger instead. Eval results go to
+`evals/results*/`.)
+
 The **reverse map is never persisted to disk.** It lives in memory
-for the duration of a single request. If the process crashes mid-
+for the duration of a single request (MCP `redact.scrub` sessions are the
+exception: they live until `redact.restore` consumes them or the
+`transport.mcp_session_cap` LRU evicts them). If the process crashes mid-
 request, the map is lost and the response can't be de-redacted. That
 is intentional: on-disk reverse maps would be a leakage channel
 worse than the one we're trying to prevent.

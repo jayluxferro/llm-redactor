@@ -6,8 +6,8 @@
 #   ollama pull llama3.2:3b
 #   uv run --native-tls python -m llm_redactor.cli serve --config examples/ollama-only.yaml
 #
-# Burp plugin → set NER endpoint to:
-#   http://localhost:7789/v1/redactor/detect
+# Burp plugin: no setting needed; it always calls
+#   http://127.0.0.1:7789/v1/redactor/detect-batch
 
 local_model:
   backend: ollama

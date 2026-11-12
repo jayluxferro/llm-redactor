@@ -100,15 +100,17 @@ uv run llm-redactor serve --port 7789
 **Point your agent at it:**
 
 ```bash
-# Claude Code
-export OPENAI_API_BASE=http://localhost:7789/v1
+# Claude Code (Anthropic Messages API). No /v1 here: Claude Code appends
+# /v1/messages itself. The proxy's cloud_target must then be Anthropic,
+# e.g. examples/anthropic-default.yaml.
+export ANTHROPIC_BASE_URL=http://localhost:7789
 claude
 
 # Aider
 aider --openai-api-base http://localhost:7789/v1
 
-# Cursor / Continue / any OpenAI-compatible agent
-# Set api_base: http://localhost:7789/v1 in the agent's config
+# Cursor / Continue / openai-python (OPENAI_BASE_URL) / any OpenAI-compatible
+# agent: base URL http://localhost:7789/v1. It must end in /v1, see below.
 
 # Direct curl
 curl http://localhost:7789/v1/chat/completions \
@@ -116,10 +118,23 @@ curl http://localhost:7789/v1/chat/completions \
   -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Email alice@example.com about project Falcon"}]}'
 ```
 
-The proxy intercepts every request, redacts PII/secrets, forwards to
-the real cloud endpoint, restores placeholders in the response, and
-returns a normal answer. Supports streaming (`stream: true`) and the
-Anthropic Messages API (`/v1/messages`).
+The proxy redacts PII/secrets in requests to `/v1/chat/completions`,
+`/v1/messages` and `/v1/messages/count_tokens`, forwards them to the real
+cloud endpoint, restores placeholders in the response (streamed or not, text
+and tool-call arguments alike), and returns a normal answer. On
+`/v1/messages` that covers the system prompt, text, tool results, tool-call
+inputs and text documents.
+
+What it does **not** redact, so check it against your setup:
+
+- **Any other path is forwarded raw**, e.g. OpenAI `/v1/responses` or
+  `/v1/embeddings`, or a base URL configured without its `/v1`. Such responses
+  carry `X-LLM-Redactor-Mode: raw-passthrough`.
+- **OpenAI-format requests that carry `tools` / `functions`** bypass redaction
+  unless `transport.tools_policy: refuse`. Most agents send tools on every
+  call.
+- **Content inside signed `thinking` blocks** is never modified, by design
+  (see `redact/raw_surgery.py`).
 
 **Configure the cloud target** in `llm_redactor.yaml`:
 
@@ -139,7 +154,8 @@ export LLM_REDACTOR_CLOUD_ENDPOINT=https://api.openai.com/v1
 
 ### 3. MCP server (for Claude Code, Claude Desktop, etc.)
 
-Add to your MCP config (`~/.claude/settings.json` for Claude Code):
+Add to your MCP config: `.mcp.json` in the project, or `claude mcp add` for
+Claude Code (MCP servers are not read from `~/.claude/settings.json`):
 
 ```json
 {
@@ -173,7 +189,7 @@ The agent calls one tool that handles everything:
 ```json
 {
   "messages": [
-    {"role": "user", "content": "Help debug this for alice@example.com, API key sk-abc123"}
+    {"role": "user", "content": "Help debug this for alice@example.com, API key sk-proj-4fJk9QmZ2LwX8rTb7Vn3"}
   ],
   "model": "gpt-4o"
 }
@@ -206,16 +222,18 @@ Agent                          llm-redactor                Cloud LLM
 
 ```json
 // Call redact.scrub
-{ "text": "Contact alice@example.com about project Falcon. API key: sk-abc123def456" }
+{ "text": "Contact alice@example.com about project Falcon. API key: sk-proj-4fJk9QmZ2LwX8rTb7Vn3" }
 ```
 
 ```json
-// Returns
+// Returns (real output; NER is on by default and tags "Falcon" as an org).
+// A short made-up key such as "sk-abc123" is NOT detected: vendor and generic
+// key patterns require realistic lengths (sk- + 20 chars, or 16+ after "key:").
 {
-  "redacted_text": "Contact ⟨EMAIL_1⟩ about project Falcon. API key: ⟨API_KEY_1⟩",
-  "session_id": "a1b2c3d4-...",
-  "detections": 2,
-  "detected_kinds": ["email", "generic_api_key"]
+  "redacted_text": "Contact ⟨EMAIL_1⟩ about project ⟨ORG_NAME_1⟩. API key: ⟨OPENAI_API_KEY_1⟩",
+  "session_id": "e7736626-...",
+  "detections": 3,
+  "detected_kinds": ["email", "openai_api_key", "org_name"]
 }
 ```
 
@@ -305,10 +323,10 @@ one; otherwise it runs on CPU. It paints opaque rectangles over every detected r
 If the model/runtime is unavailable, the image passes through unchanged and the Burp
 Activity tab records `image-redactor-unavailable`.
 
-### 5. Claude Code hook (automatic warnings)
+### 5. Claude Code hook (blocks risky tool calls)
 
-Install a pre-tool hook that warns when sensitive content is about
-to leave through any tool. Add to `~/.claude/settings.json`:
+Install a pre-tool hook that blocks a tool call whose input contains
+sensitive content. Add to `~/.claude/settings.json`:
 
 ```json
 {
@@ -328,32 +346,36 @@ to leave through any tool. Add to `~/.claude/settings.json`:
 }
 ```
 
-The hook scans every tool input for emails, API keys, bearer tokens,
-PEM keys, and SSN patterns. If found, it blocks the tool call with a
-warning. This works as a safety net alongside any of the other modes.
+The hook scans every string in a tool input, nested ones included, for
+emails, API keys in assignments, AWS access keys, bearer tokens, PEM keys
+and SSN patterns. On a match it exits 2, which blocks the call, and the
+findings go to stderr, which Claude Code shows to Claude. To warn without
+blocking, change its `exit 2` to `exit 0`. It is a small pattern set (any
+email blocks, including `git@github.com`), meant as a safety net alongside
+the other modes, not a replacement for the detector.
 
 ### Combining modes (belt and suspenders)
 
 For maximum coverage, run the proxy AND load the MCP tools:
 
 ```bash
-# Terminal 1: proxy catches all OpenAI-compatible traffic
+# Terminal 1: proxy (cloud_target: Anthropic, see examples/anthropic-default.yaml)
 uv run llm-redactor serve --port 7789
 
 # Terminal 2: agent with both proxy and MCP
-export OPENAI_API_BASE=http://localhost:7789/v1
+export ANTHROPIC_BASE_URL=http://localhost:7789
 claude  # with llm-redactor MCP server also configured
 ```
 
-- **Proxy**: silently redacts everything going to the cloud
+- **Proxy**: redacts the agent's model traffic (see the limits listed above)
 - **MCP tools**: available for the agent to inspect detections or manually scrub
-- **Hook**: warns if sensitive data slips through other tool calls
+- **Hook**: blocks tool calls whose input still contains sensitive data
 
 ### Mode comparison
 
 | | HTTP Proxy | `llm.chat` | `scrub`/`restore` | Hook |
 |---|---|---|---|---|
-| Agent awareness | None | Calls one tool | Calls two tools | Warning only |
+| Agent awareness | None | Calls one tool | Calls two tools | Blocked call + reason |
 | Coverage | All requests | When agent uses it | When agent uses it | All tool calls |
 | Cloud config needed | Yes | Yes | No | No |
 | Works with | Any client | MCP agents | MCP agents | Claude Code |
@@ -370,9 +392,20 @@ Copy one of the example configs as your starting point:
 | [`cloud-redact.yaml`](examples/cloud-redact.yaml) | Proxy | Redact PII/secrets, forward to OpenAI | 15.3% |
 | [`cloud-redact-rephrase.yaml`](examples/cloud-redact-rephrase.yaml) | Proxy | Redact + rephrase implicit identity | 13.9% |
 | [`max-privacy.yaml`](examples/max-privacy.yaml) | Proxy | A+B+C: local routing + redact + rephrase | **0.6%** |
-| [`anthropic.yaml`](examples/anthropic.yaml) | Proxy | Redact for Anthropic Claude API | 15.3% |
+| [`anthropic-default.yaml`](examples/anthropic-default.yaml) | Proxy | Redact for Anthropic Claude API | 15.3% |
 | [`mcp-with-cloud.yaml`](examples/mcp-with-cloud.yaml) | MCP | `llm.chat` tool with cloud backend | 15.3% |
 | [`strict.yaml`](examples/strict.yaml) | Proxy | Refuse on low-confidence detections | varies |
+
+> **Read this before relying on the table.** `serve` and `mcp` only ever run
+> Option B (redaction), optionally with validation. Options A (local routing),
+> C (rephrase) and H (DP noise) are implemented for the evaluation harness only
+> (`evals/runner.py`), so `local-only.yaml`, `cloud-redact-rephrase.yaml` and
+> `max-privacy.yaml` behave like plain Option B under `serve`. The A / A+B /
+> A+B+C rows were also produced by a harness that, until the fix in this
+> revision, never routed anything locally (it compared `classify()`'s tuple to
+> `"TRIVIAL"`), so those numbers need re-running. `strict.yaml` refuses only
+> spans scored below 0.5, and with the default `ner_confidence_floor: 0.5`
+> nothing below 0.5 survives detection. It refuses only if you lower the floor.
 
 ```bash
 # Pick a config
@@ -398,24 +431,24 @@ YAML config to enable or disable entire families.
 
 ### Category aliases (default)
 
-The four top-level aliases are the defaults and cover everything:
+The default policy is `categories: [all]`. These aliases expand as follows:
 
 | Alias | Expands to |
 |---|---|
-| `all` | Every category below |
+| `all` | Every category below, plus `unknown` (custom patterns) |
 | `pii` | identity, contact, government_id, financial, medical, temporal |
 | `secret` | credential, cloud_credential, vendor_api_key, private_key |
 | `org_identifier` | infrastructure |
 | `customer_name` | identity |
 
 ```yaml
-# Default — detects all sensitive data:
-policy:
-  categories: [pii, secret, org_identifier, customer_name]
-
-# Shorthand for everything:
+# Default: everything, including custom patterns:
 policy:
   categories: [all]
+
+# Every built-in category, but NOT custom patterns (add `unknown` for those):
+policy:
+  categories: [pii, secret, org_identifier, customer_name]
 ```
 
 You can mix aliases and fine-grained categories freely:
@@ -425,10 +458,9 @@ You can mix aliases and fine-grained categories freely:
 policy:
   categories: [secret, contact]
 
-# Everything except temporal:
+# Everything except temporal (`pii` includes temporal, so list its parts):
 policy:
-  categories: [pii, secret, org_identifier, customer_name]
-  # then filter temporal in your extend_patterns_file or post-processing
+  categories: [identity, contact, government_id, financial, medical, secret, org_identifier]
 ```
 
 ### Full taxonomy
@@ -455,7 +487,7 @@ policy:
 | | `ein` | regex | US Employer Identification Number (context-anchored) |
 | | `us_itin` | NER | US Individual Taxpayer Identification Number |
 | | `driver_license` | NER | US driver's licence number |
-| **financial** | `credit_card` | regex, NER | Credit card number (Luhn-validated) |
+| **financial** | `credit_card` | regex, NER | Credit card number (Luhn-checked by the `rules` validation backend) |
 | | `us_routing_number` | regex | US ABA routing number (checksum-validated) |
 | | `us_bank_account` | regex | Bank account number (context-anchored) |
 | | `crypto_btc` | regex | Bitcoin address: legacy, P2SH, bech32, taproot, testnet (checksum-validated) |
@@ -555,9 +587,10 @@ positives near zero. Limits worth knowing:
   infrastructure contracts (zero address, WETH, USDC, Multicall3, …) passes
   through unredacted.
 
-Custom patterns added via `policy.extend_patterns_file` get the
-category `unknown` unless you add them to the `CATEGORY_MAP` in
-`detect/types.py`.
+Custom patterns added via `policy.extend_patterns_file` are loaded by
+`serve`, `mcp` and `detect`. They get the category `unknown`, which `all`
+includes. A narrower policy must list `unknown` explicitly, or you can add
+the kind to `CATEGORY_MAP` in `detect/types.py`.
 
 ## Project structure
 
