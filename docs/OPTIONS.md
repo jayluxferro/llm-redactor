@@ -188,6 +188,14 @@ TEEs are **not a panacea**. They raise the bar substantially but
 they don't eliminate every threat. The paper will quantify residual
 risk based on publicly documented vulnerabilities in each platform.
 
+### Implementation status
+`transport/tee.py` implements the flow but **not the attestation**:
+it accepts any endpoint whose attestation URL answers HTTP 200 with
+`enclave_id` and `pcr_values` fields. No COSE signature, certificate
+chain, PCR measurement or nonce is checked, so it proves nothing
+about the endpoint. It is a demo for the evaluation harness; do not
+rely on it to protect data.
+
 ---
 
 ## Option E — Split inference
@@ -314,8 +322,12 @@ paraphrase jitter, random deletion) so the model's output over the
 population is faithful but individual inputs can't be reconstructed.
 
 ### Privacy property
-**Formal DP guarantee at some ε**. Stronger ε (more noise) = stronger
-privacy and worse utility.
+**In principle, a formal DP guarantee at some ε**: lower ε (more
+noise) = stronger privacy and worse utility. The mechanism in
+`noise/dp.py` does **not** provide one: it replaces each word with
+probability 1/(1+e^ε) from small fixed word pools, which is a
+heuristic resembling the exponential mechanism, not a proof over the
+vocabulary. Treat it as noise, not as differential privacy.
 
 ### Utility property
 **Lossy for qualitative queries.** Great for statistical workloads
@@ -345,14 +357,14 @@ privacy and worse utility.
 
 | Option | Privacy | Utility | Cost | Latency | Works today? |
 |---|---|---|---|---|---|
-| **A** local | perfect | bounded | $0 | low | yes |
-| **B** redact | partial | high | low | low | yes |
-| **C** rephrase | partial | medium | low | medium | yes |
-| **D** TEE | strong | full | high | low | yes (limited) |
+| **A** local | perfect | bounded | $0 | low | harness only |
+| **B** redact | partial | high | low | low | yes (proxy, MCP, Burp) |
+| **C** rephrase | partial | medium | low | medium | harness only |
+| **D** TEE | strong (if attested; the check here is a stub) | full | high | low | demo only |
 | **E** split | partial | full | medium | medium | research |
 | **F** FHE | mathematical | full | prohibitive | very high | research (tiny) |
 | **G** MPC | mathematical | full | high | high | research |
-| **H** DP noise | formal | lossy | low | low | yes (niche) |
+| **H** DP noise | formal in theory; heuristic as implemented | lossy | low | low | harness only |
 
 ## Combining options
 

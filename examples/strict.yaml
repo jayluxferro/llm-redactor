@@ -5,7 +5,8 @@
 #            the request is refused with HTTP 422 (proxy) or error (MCP)
 #            rather than silently passing it through.
 #
-# Trade-off: higher refusal rate, but no silent leaks
+# Trade-off: higher refusal rate. It cannot refuse what no detector finds:
+#            values the detectors miss entirely still go out.
 #
 # Usage:
 #   cp examples/strict.yaml llm_redactor.yaml
@@ -19,6 +20,10 @@ cloud_target:
 local_model:
   endpoint: http://127.0.0.1:11434
   chat_model: llama3.2:3b
+  # NER spans below this floor are dropped before the strict check runs.
+  # At the default 0.5 nothing under 0.5 would survive to be refused, so
+  # strict mode would never fire; 0.3 lets weak NER hits reach it.
+  ner_confidence_floor: 0.3
 
 transport:
   http_port: 7789

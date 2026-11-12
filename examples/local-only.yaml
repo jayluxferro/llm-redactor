@@ -1,8 +1,11 @@
 # Local-only configuration (MCP mode)
 #
-# Best for: maximum privacy, no cloud dependency
-# Eval result: 0% leak on all workloads (nothing leaves the device)
-# Trade-off: bounded by local model quality (3B model)
+# Best for: an agent that should only ever handle scrubbed text
+# What it protects: the MCP tools redact.scrub / redact.restore run Option B
+# (regex, wallets, NER) on this machine. Where the agent then sends the
+# scrubbed text is up to the agent: nothing leaves the device only if the
+# agent's own model is local too.
+# Trade-off: none beyond detection latency; no cloud_target is used
 #
 # Usage (standalone):
 #   cp examples/local-only.yaml llm_redactor.yaml
@@ -40,19 +43,21 @@ pipeline:
   #   enabled: true
   #   backend: rules
 
-  # Option A: route trivial requests to local model
+  # Option A: route trivial requests to the local model. Read only by the
+  # evaluation harness (7.2% combined leak on PII there); `mcp` ignores it.
   opt_a_local_only: { enabled: true }
 
   # Option B: redact PII/secrets with NER + regex
-  # Eval: 15.3% combined leak on PII, 31.8% on secrets
+  # Eval (with NER): 9.2% combined leak on PII, 0.0% on secrets
   opt_b_redact: { enabled: true, strict: false }
 
   # Option C: rephrase to strip implicit identity
-  # Eval: B+C reduces PII leak to 13.9%
+  # Eval: B+C 3.7% on PII (evaluation harness only)
   opt_c_rephrase: { enabled: false, require_validator_pass: true }
 
   # Option H: DP noise as last-line defence
-  # Eval: marginal improvement over B alone at epsilon=4
+  # Eval: marginal improvement over B alone at epsilon=4 (not re-run;
+  # evaluation harness only)
   opt_h_dp_noise: { enabled: false, epsilon: 4.0 }
 
 policy:

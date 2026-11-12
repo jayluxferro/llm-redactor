@@ -1,8 +1,9 @@
 # Cloud with redaction (proxy mode)
 #
 # Best for: using cloud LLMs with PII/secret protection
-# Eval result: 15.3% combined leak on PII, 31.8% on secrets
-# Trade-off: ~20ms latency overhead, 78% baseline quality preserved
+# Eval result (Option B with NER, re-run 2026-11-12): 9.2% combined leak on
+# PII, 0.0% on secrets, 45.1% on code; see README "Key results"
+# Trade-off: detection adds ~5-10 ms per prompt (eval p50 with NER)
 #
 # Usage:
 #   cp examples/cloud-redact.yaml llm_redactor.yaml

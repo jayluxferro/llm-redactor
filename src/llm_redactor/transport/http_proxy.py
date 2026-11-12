@@ -1471,11 +1471,11 @@ async def raw_passthrough(request: Request, path: str) -> Response:
 
     Registered LAST so every explicit route above wins.  Forwards the inbound
     bytes RAW to the upstream — no redaction, no JSON round-trip.  NOTE: that
-    means any content-bearing endpoint without a route of its own here (e.g.
-    OpenAI ``/v1/responses``, ``/v1/embeddings``, or a base URL missing its
-    ``/v1``) would reach the cloud unredacted.  So requests that carry a
-    body are refused unless ``transport.unknown_path_policy: forward``;
-    bodiless ones (``GET /v1/models``) are forwarded, marked
+    means any content-bearing endpoint without a route of its own here (files,
+    batches, assistants, or any path under a base URL missing its ``/v1``)
+    would reach the cloud unredacted.  So requests that carry a body are
+    refused unless ``transport.unknown_path_policy: forward``; bodiless ones
+    (``GET /v1/models``) are forwarded, marked
     ``X-LLM-Redactor-Mode: raw-passthrough``.
     """
     body = await request.body()

@@ -53,14 +53,24 @@ See [`docs/OPTIONS.md`](docs/OPTIONS.md) for the deep dive.
 | Option | WL1 (PII) | WL2 (Secrets) | WL3 (Implicit) | WL4 (Code) |
 |--------|-----------|---------------|----------------|------------|
 | Baseline | 100% | 100% | 100% | 100% |
-| B (NER) | 15.3% | 31.8% | 95.0% | 58.5% |
-| B+C | 13.9% | 31.6% | 94.1% | 55.8% |
-| A | 6.3% | 24.2% | 46.8% | 59.9% |
-| A+B+C | 0.6% | 6.4% | 43.6% | 31.3% |
-| E/F/G | 0% | 0% | 0% | 0% |
+| B (NER) | 9.2% | 0.0% | 93.6% | 45.1% |
+| B+C | 3.7% | 4.5% | 89.5% | 28.2% |
+| A | 7.2% | 25.9% | 60.9% | 60.2% |
+| A+B | 0.3% | 0.0% | 55.9% | 28.8% |
+| A+B+C | 0.0% | 1.0% | 52.7% | 15.7% |
 
-*Combined leak rate (exact + partial). Lower is better. E/F/G are
-protocol stubs — 0% reflects that tokens never leave the device.*
+*Combined leak rate: the share of annotated sensitive spans that reach the
+cloud verbatim (exact leak) or with an informative word of theirs that the
+rest of the sample does not also contain (partial leak; perfect redaction
+scores 0). See [docs/EVALUATION.md](docs/EVALUATION.md). Lower is better.
+Re-run on 2026-11-12 after fixing the harness and metrics, with Ollama
+`llama3.2:3b` as the local model; earlier figures were produced by a harness
+in which A never routed locally and are not comparable. Reproduce with `uv
+run python -m evals.run_eval --option B --use-ner --workload wl1_pii
+wl2_secrets wl3_implicit wl4_code` (and the other options). WL3's implicit
+identifiers are mostly beyond regex and NER, which is why it stays high.
+Options E, F and G are research stubs that send nothing to a remote model,
+so they are left out rather than shown as 0%.*
 
 ---
 
@@ -118,23 +128,30 @@ curl http://localhost:7789/v1/chat/completions \
   -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Email alice@example.com about project Falcon"}]}'
 ```
 
-The proxy redacts PII/secrets in requests to `/v1/chat/completions`,
-`/v1/messages` and `/v1/messages/count_tokens`, forwards them to the real
-cloud endpoint, restores placeholders in the response (streamed or not, text
-and tool-call arguments alike), and returns a normal answer. On
-`/v1/messages` that covers the system prompt, text, tool results, tool-call
-inputs and text documents.
+The proxy redacts PII/secrets in requests to the OpenAI routes
+`/v1/chat/completions`, `/v1/responses`, `/v1/completions` and
+`/v1/embeddings` and the Anthropic routes `/v1/messages` and
+`/v1/messages/count_tokens`, forwards them to the real cloud endpoint,
+restores placeholders in the response (streamed or not, text and tool-call
+arguments alike), and returns a normal answer. That covers system prompts and
+instructions, messages, tool results and tool-call arguments (also in OpenAI
+requests that carry `tools`) and, on `/v1/messages`, text documents.
 
 What it does **not** redact, so check it against your setup:
 
-- **Any other path is forwarded raw**, e.g. OpenAI `/v1/responses` or
-  `/v1/embeddings`, or a base URL configured without its `/v1`. Such responses
-  carry `X-LLM-Redactor-Mode: raw-passthrough`.
-- **OpenAI-format requests that carry `tools` / `functions`** bypass redaction
-  unless `transport.tools_policy: refuse`. Most agents send tools on every
-  call.
+- **A request with a body to any other path is refused** with 422 (`reason:
+  unknown_path`) rather than sent. `transport.unknown_path_policy: forward`
+  sends such requests raw instead, marked `X-LLM-Redactor-Mode:
+  raw-passthrough`. A base URL configured without its `/v1` lands here, and
+  the error says so. Bodiless requests such as `GET /v1/models` are forwarded.
+- **`transport.tools_policy: bypass`** forwards OpenAI requests that carry
+  `tools` / `functions` unredacted. The default, `redact`, redacts them;
+  `refuse` rejects them.
 - **Content inside signed `thinking` blocks** is never modified, by design
-  (see `redact/raw_surgery.py`).
+  (see `redact/raw_surgery.py`). If the rest of such a request cannot be
+  redacted around them, it is refused (422, `signed_body_unredactable`).
+- **Images and other non-text parts** pass through; only the Burp extension
+  has (optional) image redaction.
 
 **Configure the cloud target** in `llm_redactor.yaml`:
 
@@ -393,24 +410,23 @@ Copy one of the example configs as your starting point:
 
 | Config | Mode | What it does | Eval leak rate (PII) |
 |--------|------|-------------|---------------------|
-| [`local-only.yaml`](examples/local-only.yaml) | MCP | Local model only, nothing leaves device | 0% |
-| [`cloud-redact.yaml`](examples/cloud-redact.yaml) | Proxy | Redact PII/secrets, forward to OpenAI | 15.3% |
-| [`cloud-redact-rephrase.yaml`](examples/cloud-redact-rephrase.yaml) | Proxy | Redact + rephrase implicit identity | 13.9% |
-| [`max-privacy.yaml`](examples/max-privacy.yaml) | Proxy | A+B+C: local routing + redact + rephrase | **0.6%** |
-| [`anthropic.yaml`](examples/anthropic.yaml) | Proxy | Redact for Anthropic Claude API | 15.3% |
-| [`mcp-with-cloud.yaml`](examples/mcp-with-cloud.yaml) | MCP | `llm.chat` tool with cloud backend | 15.3% |
-| [`strict.yaml`](examples/strict.yaml) | Proxy | Refuse on low-confidence detections | varies |
+| [`local-only.yaml`](examples/local-only.yaml) | MCP | `redact.scrub` / `redact.restore` tools; no cloud target | 9.2% (B) |
+| [`cloud-redact.yaml`](examples/cloud-redact.yaml) | Proxy | Redact PII/secrets, forward to OpenAI | 9.2% (B) |
+| [`cloud-redact-rephrase.yaml`](examples/cloud-redact-rephrase.yaml) | Proxy | Redact + rephrase implicit identity | 3.7% (B+C, harness only) |
+| [`max-privacy.yaml`](examples/max-privacy.yaml) | Proxy | A+B+C: local routing + redact + rephrase | 0.0% (A+B+C, harness only) |
+| [`anthropic.yaml`](examples/anthropic.yaml) | Proxy | Redact for Anthropic Claude API | 9.2% (B) |
+| [`mcp-with-cloud.yaml`](examples/mcp-with-cloud.yaml) | MCP | `llm.chat` tool with cloud backend | 9.2% (B) |
+| [`strict.yaml`](examples/strict.yaml) | Proxy | Refuse on low-confidence detections | 9.2% (B) or refused |
 
 > **Read this before relying on the table.** `serve` and `mcp` only ever run
 > Option B (redaction), optionally with validation. Options A (local routing),
 > C (rephrase) and H (DP noise) are implemented for the evaluation harness only
-> (`evals/runner.py`), so `local-only.yaml`, `cloud-redact-rephrase.yaml` and
-> `max-privacy.yaml` behave like plain Option B under `serve`. The A / A+B /
-> A+B+C rows were also produced by a harness that, until the fix in this
-> revision, never routed anything locally (it compared `classify()`'s tuple to
-> `"TRIVIAL"`), so those numbers need re-running. `strict.yaml` refuses only
-> spans scored below 0.5, and with the default `ner_confidence_floor: 0.5`
-> nothing below 0.5 survives detection. It refuses only if you lower the floor.
+> (`evals/runner.py`), so `cloud-redact-rephrase.yaml` and `max-privacy.yaml`
+> behave like plain Option B under `serve`; their figures are what the full
+> pipeline reaches in the harness. `strict.yaml` refuses requests with spans
+> scored below 0.5, and lowers `ner_confidence_floor` to 0.3 so that such spans
+> survive detection at all (at the default 0.5 strict mode could never fire).
+> It cannot refuse what no detector finds.
 
 ```bash
 # Pick a config

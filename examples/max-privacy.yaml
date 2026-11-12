@@ -1,13 +1,16 @@
 # Maximum privacy: local routing + redaction + rephrase (A+B+C)
 #
 # Best for: highest privacy with cloud fallback for complex tasks
-# Eval result: 0.6% combined leak on PII (zero exact leaks across
-#              500 samples), 6.4% on secrets, 31.3% on code
-# Trade-off: ~2s latency, requires Ollama for classification + rephrase
+# Eval result (harness, re-run 2026-11-12): 0.0% combined leak on PII,
+#              1.0% on secrets, 15.7% on code
+# Trade-off: 0.15-1.4 s latency, requires Ollama for classification + rephrase
 #
-# This is the paper's recommended configuration. Trivial requests
-# are answered locally (nothing leaves device). Complex requests
-# are redacted + rephrased before going to cloud.
+# IMPORTANT: local routing (A) and rephrasing (C) exist only in the
+# evaluation harness (evals/runner.py). `serve` and `mcp` run Option B
+# alone, so under the proxy this file redacts (with LLM validation) and
+# forwards every request: nothing is answered locally and nothing is
+# rephrased. The figures above are what the full pipeline achieves in the
+# harness, not what the proxy does.
 #
 # Usage:
 #   cp examples/max-privacy.yaml llm_redactor.yaml
@@ -32,13 +35,13 @@ pipeline:
   # Adds one Ollama round-trip (~300ms). Recommended when accuracy matters.
   llm_validation: { enabled: true }
 
-  # Option A: route trivial requests locally (94% of PII workload)
+  # Option A: route trivial requests locally (evaluation harness only)
   opt_a_local_only: { enabled: true }
 
   # Option B: NER + regex redaction on cloud-bound requests
   opt_b_redact: { enabled: true, strict: false }
 
-  # Option C: semantic rephrase for implicit identity
+  # Option C: semantic rephrase for implicit identity (evaluation harness only)
   opt_c_rephrase: { enabled: true, require_validator_pass: true }
 
 policy:

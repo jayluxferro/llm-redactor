@@ -46,7 +46,7 @@ Process-wide counters (`requests`, `detections`, `restores`, `llm_calls`).
 
 OpenAI-compatible. Point the client's base URL (`OPENAI_BASE_URL` for openai-python ≥ 1)
 at `http://localhost:<port>/v1`. It must end in `/v1`: without it, requests land on the
-raw-passthrough catch-all and are forwarded **unredacted**.
+catch-all, which refuses them (see *Other paths* below).
 
 **Response headers**
 
@@ -55,13 +55,17 @@ raw-passthrough catch-all and are forwarded **unredacted**.
 | `X-LLM-Redactor-Mode: redacted` | Normal path (redaction applied) |
 | `X-LLM-Redactor-Mode: bypass-tools` | Request included `tools` or `functions` and `transport.tools_policy` is `bypass` |
 | `X-LLM-Redactor-Bypass-Reason: tools-or-functions` | Same as bypass-tools |
-| `X-LLM-Redactor-Mode: raw-passthrough` | Any path without its own route (catch-all): forwarded unredacted |
+| `X-LLM-Redactor-Mode: raw-passthrough` | A path without its own route, forwarded raw: bodiless requests, or any request when `transport.unknown_path_policy: forward` |
 
 **Tool / function calls**
 
-If the JSON body contains `tools` or `functions`, the proxy either **refuses** (HTTP 422,
-`reason: tools_or_functions_present`) when `transport.tools_policy: refuse`, or **forwards
-unchanged** to the cloud when `tools_policy: bypass` (no redaction; see headers above).
+If the JSON body contains `tools` or `functions`, `transport.tools_policy` decides:
+`redact` (default) redacts messages, tool results (`role: tool` / `function`) and tool-call
+arguments like any request, forwards the tool schemas untouched, and restores placeholders
+in the tool calls the model returns; `refuse` answers HTTP 422
+(`reason: tools_or_functions_present`); `bypass` forwards the request unchanged, with no
+redaction (see headers above). Tool content is detected with NER too unless
+`pipeline.tool_content_ner: false` (then regex and wallet detection only).
 
 **Per-request override**
 
@@ -94,6 +98,30 @@ SSE `delta.content` chunks before they reach the client, including placeholders 
 streams across several deltas. Message `content` may be a string or a list of content
 parts; `text` parts are redacted, other parts (images) pass through.
 
+### `POST /v1/responses`
+
+OpenAI Responses API (Codex and newer OpenAI agents). Redacts `instructions` and, in
+`input`, message text, function-call arguments, tool output, local shell commands, and
+the summaries and text of replayed reasoning items; IDs, metadata and
+`encrypted_content` are forwarded untouched. Placeholders are restored in the response
+output (message text, tool-call arguments, shell commands, reasoning summaries),
+non-streaming and in the SSE event stream (`transport/openai_responses.py`).
+
+### `POST /v1/completions` and `POST /v1/embeddings`
+
+Legacy completions: `prompt` and `suffix` strings are redacted, `choices[].text` restored
+(streaming too). Embeddings: the `input` strings are redacted before they are embedded;
+token arrays pass through. Placeholders are numbered per request, so the same name can
+embed differently in two requests.
+
+### Other paths
+
+A request with a body to a path without its own route is refused with HTTP 422
+(`type: redactor_refused`, `reason: unknown_path`; the message points out a base URL
+missing its `/v1`). With `transport.unknown_path_policy: forward` it is forwarded raw,
+unredacted, marked `X-LLM-Redactor-Mode: raw-passthrough`. Bodiless requests
+(`GET /v1/models`, ...) are always forwarded that way.
+
 ### `POST /v1/messages`
 
 Anthropic Messages API shape. Redacts `system` (string or text blocks) and, in every
@@ -105,9 +133,10 @@ for SSE (`text_delta` and `input_json_delta`, JSON-escaped). Response JSON carri
 
 Requests containing signed `thinking` / `redacted_thinking` blocks are redacted surgically
 on the raw bytes, so the signatures stay valid; the header is then
-`X-LLM-Redactor-Mode: signed-surgical`. If nothing needs redacting, or the surgery fails,
-the original bytes are forwarded with `X-LLM-Redactor-Mode: signed-passthrough`.
-Content inside the signed blocks themselves is never modified.
+`X-LLM-Redactor-Mode: signed-surgical`. If nothing needs redacting, the original bytes are
+forwarded with `X-LLM-Redactor-Mode: signed-passthrough`. If the surgery fails, the request
+is refused with HTTP 422 (`reason: signed_body_unredactable`) instead of being sent
+unredacted. Content inside the signed blocks themselves is never modified.
 
 ### `POST /v1/messages/count_tokens`
 

@@ -1,8 +1,12 @@
 # Cloud with redaction + rephrasing (proxy mode)
 #
 # Best for: strong privacy with cloud LLMs, including implicit identity
-# Eval result: 13.9% combined leak on PII, 55.8% on code
-# Trade-off: ~2s latency (local model rephrase), quality varies
+# Eval result (B+C, re-run 2026-11-12): 3.7% combined leak on PII, 28.2% on code
+# Trade-off: 0.3-1.4 s latency for the local rephrase, quality varies
+#
+# NOTE: rephrasing (Option C) runs only in the evaluation harness
+# (evals/runner.py). `serve` and `mcp` run Option B alone, so under the proxy
+# this file behaves like cloud-redact.yaml.
 #
 # Requires Ollama running locally for the rephrase step.
 #
@@ -27,7 +31,7 @@ pipeline:
   # Option B: NER + regex redaction
   opt_b_redact: { enabled: true, strict: false }
 
-  # Option C: semantic rephrase via local model
+  # Option C: semantic rephrase via local model (evaluation harness only)
   # Strips implicit identity that B can't catch
   # Validator ensures technical terms survive (70% threshold)
   # Falls back to B-only if rephrase quality is too low

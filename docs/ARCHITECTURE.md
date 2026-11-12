@@ -1,7 +1,11 @@
 # Architecture
 
-`llm-redactor` is a single process with two transport interfaces and
-a pipeline of eight options that can be individually enabled.
+`llm-redactor` is a single process with two transport interfaces. The
+diagram below is the design space of eight options that the evaluation
+harness (`evals/runner.py`) measures. The proxy (`serve`) and the MCP
+server run one path through it: stage 1 (detect), stage 2 (redact, Option
+B) and stage 6 (restore). The other stages are wired up only in the
+harness.
 
 ```
 ┌────────────────────────┐
@@ -60,10 +64,10 @@ a pipeline of eight options that can be individually enabled.
               └──────────────────────────┘
 ```
 
-Options **E, F, G** live as alternative *routers* in stage 5: if
-enabled, they replace the standard cloud API target with a
-split-inference endpoint, an FHE endpoint, or an MPC coordinator.
-These are research-stage and gated off by default.
+Options **E, F, G** are alternative *routers* for stage 5 (a
+split-inference endpoint, an FHE endpoint, an MPC coordinator). They are
+research stubs that only the harness calls, and they send nothing to a
+real remote model.
 
 ## Transport layer
 
@@ -71,11 +75,16 @@ Two parallel interfaces:
 
 1. **MCP server (stdio)** — `llm.chat`, `redact.scrub`, `redact.restore`,
    `redact.detect`, `redact.stats`.
-2. **HTTP proxy**: `POST /v1/chat/completions` (OpenAI-compatible; point
-   the client's base URL at `http://localhost:<port>/v1`, and note the
-   `/v1`) and `POST /v1/messages` + `/v1/messages/count_tokens` (Anthropic;
-   `ANTHROPIC_BASE_URL=http://localhost:<port>`). Any other path is
-   forwarded raw, unredacted (`X-LLM-Redactor-Mode: raw-passthrough`).
+2. **HTTP proxy**: OpenAI `POST /v1/chat/completions`, `/v1/completions`,
+   `/v1/responses` and `/v1/embeddings` (point the client's base URL at
+   `http://localhost:<port>/v1`, and note the `/v1`), and Anthropic
+   `POST /v1/messages` + `/v1/messages/count_tokens`
+   (`ANTHROPIC_BASE_URL=http://localhost:<port>`), all redacted and, where
+   there is a response to restore, restored, streaming included. A request
+   with a body to any other path is refused with 422 unless
+   `transport.unknown_path_policy: forward` (then it goes out raw, marked
+   `X-LLM-Redactor-Mode: raw-passthrough`); bodiless requests such as
+   `GET /v1/models` are forwarded.
 
 ## Core components
 
@@ -84,8 +93,9 @@ Two parallel interfaces:
 - `regex.py`: pattern families (secrets, structured PII), plus checksum
   filters from `checksums.py`; custom patterns via
   `policy.extend_patterns_file`.
-- `wallets.py`: blockchain addresses, public/private keys and BIP-39
-  seed phrases, classified by decoding each candidate.
+- `wallets.py`: blockchain addresses, public/private keys, seed phrases
+  (BIP-39 in 10 languages, Monero, SLIP-39, old Electrum) and ENS names,
+  classified by decoding each candidate and checking its checksum.
 - `ner.py` — `presidio` or a small local NER model for
   PII detection.
 - `llm_validator.py` — optional local LLM (Ollama) batch validation of
@@ -115,13 +125,18 @@ records.
 
 ### 4. Noise injector (`src/llm_redactor/noise/`)
 
-- `dp.py` — differential-privacy token substitution or paraphrase
-  noise.
+- `dp.py` — word-substitution noise whose rate is set by ε, seeded from
+  the text so runs are reproducible. It is a simplified mechanism, not a
+  formal differential-privacy guarantee (see OPTIONS.md, Option H).
 
 ### 5. Transport / routers (`src/llm_redactor/transport/`)
 
 - `cloud.py` — standard OpenAI-compatible POST.
-- `tee.py` — posts to a TEE endpoint and verifies the attestation.
+- `tee.py` — posts to a TEE endpoint after an attestation check that is
+  a **stub**: it only requires the attestation URL to answer HTTP 200 with
+  `enclave_id` and `pcr_values` fields. No signature, certificate chain,
+  PCR measurement or nonce is verified, so it proves nothing about the
+  endpoint; treat Option D as a demo, not a security control.
 - `split_inference.py` — stub for Option E (research).
 - `fhe.py` — stub for Option F (research).
 - `mpc.py` — stub for Option G (research).
@@ -141,38 +156,37 @@ records.
 ```yaml
 version: 1
 transport:
-  mcp: true
-  http: true
-  http_port: 7789
-  tools_policy: bypass   # bypass | refuse — tool/function payloads skip redaction
-  mcp_session_cap: 10000  # MCP scrub sessions; LRU eviction when full
+  http_port: 7789            # used by `serve` unless --port is given
+  tools_policy: redact       # redact | refuse | bypass, for OpenAI requests with tools
+  unknown_path_policy: refuse  # refuse | forward, for bodies sent to unrouted paths
+  mcp_session_cap: 10000     # MCP scrub sessions; LRU eviction when full
 
 local_model:
-  backend: ollama
   endpoint: http://127.0.0.1:11434
   chat_model: llama3.2:3b
   ner_model: null      # null = Presidio default; e.g. xx_ent_wiki_sm for multilingual
 
-cloud_target:
-  backend: openai_compat
+cloud_target:          # the API family follows the request path, not a setting
   endpoint: https://api.openai.com/v1
   api_key_env: OPENAI_API_KEY
 
 pipeline:
   llm_validation:      { enabled: false, model: "", backend: "model" }  # or "rules": checksum validators, no Ollama
   placeholder_request_tag: false  # random tag inside each placeholder per HTTP/MCP call
-  opt_a_local_only:    { enabled: false }  # opt-in for privacy-max mode
+  tool_content_ner: true          # NER on tool results and tool-call arguments too
   opt_b_redact:        { enabled: true, strict: true }
+  # The remaining options are read only by the evaluation harness (evals/);
+  # `serve` and `mcp` ignore them.
+  opt_a_local_only:    { enabled: false }
   opt_c_rephrase:      { enabled: false, require_validator_pass: true }
-  opt_d_tee:           { enabled: false, endpoint: "" }
-  opt_e_split:         { enabled: false }  # research
-  opt_f_fhe:           { enabled: false }  # research
-  opt_g_mpc:           { enabled: false }  # research
+  opt_d_tee:           { enabled: false, attestation_url: "", inference_url: "" }
+  opt_e_split:         { enabled: false }  # research stub
+  opt_f_fhe:           { enabled: false }  # research stub
+  opt_g_mpc:           { enabled: false }  # research stub
   opt_h_dp_noise:      { enabled: false, epsilon: 4.0 }
 
 policy:
-  strict_refuse_on_unknown_sensitive: true
-  categories: [pii, secret, org_identifier, customer_name]  # aliases; see README for full taxonomy
+  categories: [all]    # or aliases, e.g. [pii, secret, org_identifier, customer_name]
   extend_patterns_file: .llm_redactor/patterns.yaml
 ```
 
