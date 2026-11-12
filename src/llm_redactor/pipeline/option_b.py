@@ -10,8 +10,8 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 from ..config import Config
-from ..detect.orchestrator import detect_all, detect_all_validated
-from ..detect.types import Span, filter_by_categories
+from ..detect.orchestrator import detect_candidates, detect_validated, finalize_spans
+from ..detect.types import Span
 from ..observability import log_event
 from ..redact.placeholder import PlaceholderGenerator, RedactionResult, redact
 from ..redact.restore import restore
@@ -97,29 +97,37 @@ class OptionBPipeline:
             return None
         return secrets.token_hex(4)
 
-    async def detect_spans(self, text: str) -> list[Span]:
-        """Run configured detectors with an in-memory cache for repeated text."""
-        validation = self.config.pipeline.llm_validation
+    async def detect_spans(self, text: str, *, tool_content: bool = False) -> list[Span]:
+        """Detect (cached), then apply the policy filter and the union merge.
+
+        The cache holds *unmerged* validated spans: the policy filter has to
+        run before the merge (see detect/orchestrator.py), and both are cheap.
+
+        ``tool_content`` marks text produced by tools (tool results, tool-call
+        arguments).  ``pipeline.tool_content_ner: false`` turns NER off for it
+        (regex detection always runs): NER on source code is slow and tags
+        identifiers as organisations or people.
+        """
+        settings = self.config.pipeline
+        use_ner = self.use_ner and (settings.tool_content_ner or not tool_content)
+        validation = settings.llm_validation
         model = validation.model or self.config.local_model.chat_model
-        key = _cache_key(text, self.use_ner, validation.enabled, validation.backend, model)
-        cached = _cached_detect(key)
-        if cached is not None:
-            return filter_by_categories(cached, self.config.policy.categories)
-
-        if validation.enabled:
-            spans = await detect_all_validated(
-                text,
-                use_ner=self.use_ner,
-                ollama_endpoint=self.config.local_model.endpoint,
-                ollama_model=model,
-                backend=self.config.pipeline.llm_validation.backend,
-            )
-        else:
-            # Offload blocking regex+NER off the event loop (see detect_all).
-            spans = await asyncio.to_thread(detect_all, text, self.use_ner)
-
-        _cache_detect(key, spans)
-        return filter_by_categories(spans, self.config.policy.categories)
+        key = _cache_key(text, use_ner, validation.enabled, validation.backend, model)
+        spans = _cached_detect(key)
+        if spans is None:
+            if validation.enabled:
+                spans = await detect_validated(
+                    text,
+                    use_ner=use_ner,
+                    ollama_endpoint=self.config.local_model.endpoint,
+                    ollama_model=model,
+                    backend=validation.backend,
+                )
+            else:
+                # Offload blocking regex+NER off the event loop.
+                spans = await asyncio.to_thread(detect_candidates, text, use_ner)
+            _cache_detect(key, spans)
+        return finalize_spans(spans, self.config.policy.categories)
 
     async def redact_chat_messages(
         self,

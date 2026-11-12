@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from .ner import detect_ner
 from .regex import detect_regex
-from .types import Span
+from .types import Span, filter_by_categories
 
 if TYPE_CHECKING:
     from ..config import Config
@@ -181,12 +181,26 @@ def apply_detection_config(cfg: Config) -> None:
         load_custom_patterns(cfg.policy.extend_patterns_file)
 
 
-def _detect_and_merge(text: str, use_ner: bool) -> list[Span]:
-    """Synchronous regex + NER detection and overlap merge.
+# Detection runs in four stages, and the ORDER is the contract:
+#
+#   detect (regex + NER) -> validate (each detector span) -> filter (policy)
+#   -> merge (union of overlaps)
+#
+# Merging is last on purpose.  Merged earlier, a span the policy excludes can
+# absorb an allowed one and take it down when the merged span is filtered
+# out; and a validator can be handed text no detector claimed (the `rules`
+# backend Luhn-checks a card number plus its overlapping NER neighbour, fails,
+# and drops the card).  Callers that cache, like the proxy pipeline, cache
+# the output of detect_candidates / detect_validated and call finalize_spans
+# per request.
 
-    This is the CPU-heavy, blocking part of detection (spaCy NER in particular).
-    It is factored out so async callers can push it onto a worker thread via
-    ``asyncio.to_thread`` — running it inline on the event loop would stall
+
+def detect_candidates(text: str, use_ner: bool = True) -> list[Span]:
+    """Regex + NER spans with NER false positives suppressed; NOT merged.
+
+    This is the CPU-heavy, blocking part of detection (spaCy NER in
+    particular).  Async callers push it onto a worker thread via
+    ``asyncio.to_thread``: running it inline on the event loop would stall
     uvicorn's ``accept()`` under concurrent load and make the proxy look
     unreachable to the gateway.
     """
@@ -203,15 +217,24 @@ def _detect_and_merge(text: str, use_ner: bool) -> list[Span]:
             ner_spans = []
         spans.extend(s for s in ner_spans if not _is_false_positive(s))
 
+    return spans
+
+
+def finalize_spans(spans: list[Span], categories: list[str] | None = None) -> list[Span]:
+    """Apply the category policy, THEN union-merge (see the stage notes above)."""
+    if categories is not None:
+        spans = filter_by_categories(spans, categories)
     return _merge_overlapping(spans)
 
 
-def detect_all(text: str, use_ner: bool = True) -> list[Span]:
+def detect_all(
+    text: str, use_ner: bool = True, *, categories: list[str] | None = None
+) -> list[Span]:
     """Run all enabled detectors and return merged spans (synchronous)."""
-    return _detect_and_merge(text, use_ner)
+    return finalize_spans(detect_candidates(text, use_ner), categories)
 
 
-async def detect_all_validated(
+async def detect_validated(
     text: str,
     *,
     use_ner: bool = True,
@@ -219,7 +242,7 @@ async def detect_all_validated(
     ollama_model: str = "llama3.2:3b",
     backend: str = "model",
 ) -> list[Span]:
-    """Run all detectors, then validate spans.
+    """Detect, then validate each detector span; unmerged and unfiltered.
 
     Two backends:
 
@@ -238,7 +261,7 @@ async def detect_all_validated(
 
     # Push the blocking regex+NER work onto a thread so the event loop stays
     # free to accept new connections while spaCy runs.
-    merged = await asyncio.to_thread(_detect_and_merge, text, use_ner)
+    candidates = await asyncio.to_thread(detect_candidates, text, use_ner)
 
     # Validation pass — fail-open: if the validator itself breaks, keep the
     # detected spans (detection quality degrades gracefully, never fatally).
@@ -246,13 +269,13 @@ async def detect_all_validated(
         if backend == "rules":
             from .rules_validator import validate_spans_rules
 
-            return validate_spans_rules(merged)
+            return validate_spans_rules(candidates)
 
         from .llm_validator import validate_spans
 
         return await validate_spans(
             text,
-            merged,
+            candidates,
             endpoint=ollama_endpoint,
             model=ollama_model,
         )
@@ -262,4 +285,24 @@ async def detect_all_validated(
             backend,
             type(exc).__name__,
         )
-        return merged
+        return candidates
+
+
+async def detect_all_validated(
+    text: str,
+    *,
+    use_ner: bool = True,
+    ollama_endpoint: str = "http://127.0.0.1:11434",
+    ollama_model: str = "llama3.2:3b",
+    backend: str = "model",
+    categories: list[str] | None = None,
+) -> list[Span]:
+    """``detect_validated`` + ``finalize_spans``: merged, policy-filtered spans."""
+    spans = await detect_validated(
+        text,
+        use_ner=use_ner,
+        ollama_endpoint=ollama_endpoint,
+        ollama_model=ollama_model,
+        backend=backend,
+    )
+    return finalize_spans(spans, categories)

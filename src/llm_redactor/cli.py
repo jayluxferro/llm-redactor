@@ -121,13 +121,11 @@ def detect(
 ) -> None:
     """Dry-run: detect and optionally redact sensitive spans without sending anything."""
     from .detect.orchestrator import detect_all
-    from .detect.types import filter_by_categories
 
     cfg = load_config(_resolve_config(config_path))
     _apply_detection_config(cfg)
 
-    spans = detect_all(text, use_ner=ner)
-    spans = filter_by_categories(spans, cfg.policy.categories)
+    spans = detect_all(text, use_ner=ner, categories=cfg.policy.categories)
     if not spans:
         console.print("[green]No sensitive spans detected.[/green]")
         return

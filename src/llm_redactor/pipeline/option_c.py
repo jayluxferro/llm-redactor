@@ -12,7 +12,7 @@ from typing import Any
 
 from ..config import Config
 from ..detect.orchestrator import detect_all
-from ..detect.types import Span, filter_by_categories
+from ..detect.types import Span
 from ..redact.placeholder import RedactionResult, redact
 from ..redact.restore import restore
 from ..rephrase.local_model import RephraseResult, rephrase
@@ -67,8 +67,9 @@ class OptionCPipeline:
             if not isinstance(content, str) or not content:
                 continue
 
-            spans = detect_all(content, use_ner=self.use_ner)
-            spans = filter_by_categories(spans, self.config.policy.categories)
+            spans = detect_all(
+                content, use_ner=self.use_ner, categories=self.config.policy.categories
+            )
             all_detections.extend(spans)
 
             if spans:

@@ -133,6 +133,12 @@ class PipelineConfig:
     # system + first user message). Stable tags keep redacted bytes identical
     # across a session's turns, which upstream prompt caching requires.
     placeholder_tag_mode: str = "per_request"
+    # Run NER on tool output and tool-call arguments too (regex detection
+    # always runs there).  On by default: tool results carry most of an
+    # agent's sensitive data.  Turn off when that content is mostly source
+    # code, where NER costs ~3 s per 100 KB uncached and tags identifiers as
+    # organisations or people.
+    tool_content_ner: bool = True
     opt_a_local_only: OptionConfig = field(default_factory=OptionConfig)
     opt_b_redact: OptionBConfig = field(default_factory=OptionBConfig)
     opt_c_rephrase: OptionCConfig = field(default_factory=OptionCConfig)

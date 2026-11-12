@@ -30,7 +30,7 @@ from mcp.types import TextContent, Tool
 
 from ..config import Config, load_config
 from ..detect.orchestrator import detect_all, detect_all_validated
-from ..detect.types import Span, filter_by_categories
+from ..detect.types import Span
 from ..observability import log_event
 from ..redact.placeholder import PlaceholderGenerator, redact
 from ..redact.restore import restore
@@ -81,12 +81,14 @@ async def _detect_text(
             ollama_endpoint=_config.local_model.endpoint,
             ollama_model=model,
             backend=_config.pipeline.llm_validation.backend,
+            categories=_config.policy.categories,
         )
     else:
         # spaCy NER is CPU-bound; running it inline froze the stdio event loop
         # (no pings, no concurrent tool calls) for the duration of detection.
-        spans = await asyncio.to_thread(detect_all, text, use_ner)
-    return filter_by_categories(spans, _config.policy.categories)
+        categories = _config.policy.categories
+        spans = await asyncio.to_thread(lambda: detect_all(text, use_ner, categories=categories))
+    return spans
 
 
 def _count_restored(text: str, reverse_map: dict[str, str]) -> int:

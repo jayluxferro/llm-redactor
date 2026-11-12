@@ -201,9 +201,12 @@ async def test_strict_mode_refuses_low_confidence():
         source="test",
     )
 
+    from llm_redactor.pipeline import option_b
+
+    option_b._DETECT_CACHE.clear()  # a cached result would bypass the patch
     with (
         patch(
-            "llm_redactor.pipeline.option_b.detect_all",
+            "llm_redactor.pipeline.option_b.detect_candidates",
             return_value=[low_conf_span],
         ),
         pytest.raises(RefusalError) as exc_info,
@@ -427,7 +430,7 @@ async def test_detection_cache_is_keyed_by_settings_not_just_text() -> None:
         return []
 
     cfg = Config()
-    with patch.object(option_b, "detect_all", side_effect=fake_detect):
+    with patch.object(option_b, "detect_candidates", side_effect=fake_detect):
         await OptionBPipeline(config=cfg, use_ner=False).detect_spans(text)
         await OptionBPipeline(config=cfg, use_ner=False).detect_spans(text)  # cached
         await OptionBPipeline(config=cfg, use_ner=True).detect_spans(text)  # new key
