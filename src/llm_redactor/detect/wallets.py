@@ -41,7 +41,10 @@ shape instead, so they are the places this module can still be fooled.
   ``_CONTEXT_WINDOW`` chars, or must sit in a list right after another key.
   A bare ``0x`` + 64-hex value with no such context is deliberately NOT
   redacted (it is far more often a tx hash than a key).
-* Seed phrases are runs of BIP-39 English words; see ``MIN_MNEMONIC_WORDS``.
+* Seed phrases are runs of wordlist words (BIP-39 in its 10 languages,
+  Monero, SLIP-39, old Electrum); see ``MIN_MNEMONIC_WORDS``.
+* ENS names (``name.eth``) are matched by shape, with web3 attribute
+  chains (``w3.eth.get_balance``) excluded.
 
 Known trade-off: strict checksums mean a mistyped address is *not* redacted.
 Addresses are pasted far more often than typed, and without the checksum the
@@ -59,6 +62,7 @@ import binascii
 import hashlib
 import logging
 import re
+import unicodedata
 from collections.abc import Callable, Iterable, Iterator
 from functools import lru_cache
 from importlib import resources
@@ -87,6 +91,7 @@ ADDRESS_KINDS: frozenset[str] = frozenset(
         "crypto_algo",
         "crypto_xtz",
         "crypto_lightning",  # BOLT11 invoices and LNURLs
+        "crypto_ens",  # ENS names (name.eth): resolve to an address
         "crypto_address",  # checksum-valid address of a chain not listed above
     }
 )
@@ -619,6 +624,12 @@ _PRIVATE_KEY_CONTEXT = re.compile(
 )
 
 
+_MOVE_CONTEXT = re.compile(
+    r"(?i)\b(?:aptos|sui|movement)\b|\bmove\s+(?:address|module|package|object)\b"
+    r"|\bobject\s*id\b|\b0x[0-9a-f]{1,2}::"
+)
+
+
 def _on_secp256k1(digits: str) -> bool:
     """Does this 33/65/64-byte hex value encode a point on secp256k1?"""
     key = bytes.fromhex(digits)
@@ -648,10 +659,13 @@ def _hex_kind(text: str, m: re.Match[str], chained: bool) -> str | None:
         return "crypto_public_key"
     # 32-byte keys / 64-byte BIP32 seeds look exactly like SHA-256 / SHA-512
     # digests; only context separates them.
-    if n in (64, 128) and (
-        chained or _PRIVATE_KEY_CONTEXT.search(text, max(0, m.start() - _CONTEXT_WINDOW), m.start())
-    ):
+    window = max(0, m.start() - _CONTEXT_WINDOW), m.start()
+    if n in (64, 128) and (chained or _PRIVATE_KEY_CONTEXT.search(text, *window)):
         return "crypto_private_key"
+    # Aptos / Sui account and object IDs are 0x + 64 hex too: an address
+    # only when a Move-chain keyword is nearby (and no key keyword won above).
+    if n == 64 and prefixed and _MOVE_CONTEXT.search(text, *window):
+        return "crypto_address"
     return None
 
 
@@ -689,51 +703,104 @@ def _scan_keypair_arrays(text: str) -> Iterator[_Hit]:
             yield m.start(), m.end(), "crypto_private_key"
 
 
-# ── BIP-39 seed phrases ──────────────────────────────────────────────────
+# ── Seed phrases: BIP-39 (10 languages), Monero, SLIP-39, old Electrum ──
 
-#: Shortest run of consecutive BIP-39 words reported as a seed phrase.  Real
-#: phrases are 12-24 words (Algorand: 25, from the same list).  Measured on
-#: this repo's docs plus ~100 MB of library source: prose never chains more
-#: than 9 list words (it is full of "a", "the", "of", which are not on the
-#: list), but code does: ``(False,), (True,)`` tables, ``torch.float16``
-#: maps and CSS property lists reach 18.  Those runs repeat a handful of
-#: words, which is what ``MIN_DISTINCT_WORDS`` rejects.
+#: Shortest run of consecutive wordlist words reported as a seed phrase.
+#: Real phrases: BIP-39 12-24 words (Algorand 25 and Polyseed 16, both from
+#: BIP-39 lists), Monero 25 (13 for MyMonero), SLIP-39 shares 20 or 33, old
+#: Electrum 12.  Measured on this repo's docs plus ~100 MB of library source:
+#: prose never chains more than 9 BIP-39 words (it is full of "a", "the",
+#: "of", which no list contains), but code does: ``(False,), (True,)``
+#: tables, ``torch.float16`` maps and CSS property lists reach 18.  Those
+#: runs repeat a handful of words, which is what ``MIN_DISTINCT_WORDS``
+#: rejects.  The old Electrum list is everyday English ("about", "people",
+#: "time") yet measured the same: 11 runs of 12+, none diverse.
 MIN_MNEMONIC_WORDS = 12
 #: Distinct words required in some window of ``MIN_MNEMONIC_WORDS``.  Twelve
 #: random draws from 2048 words give >= 10 distinct words more than 99.9% of
 #: the time; the code runs above have 2-6.  (The zero-entropy test vector
-#: "abandon x11 about" is public and is deliberately not redacted.)
+#: "abandon x11 about" is public and is deliberately not redacted.)  Monero
+#: and SLIP-39 phrases carry checksums, but the run rule already separates
+#: them from prose, and not requiring the checksum keeps a phrase with one
+#: mistyped word redacted.
 MIN_DISTINCT_WORDS = 10
 
+# (file stem in detect/wordlists/, expected size).  Provenance and SHA-256
+# pins are in tests/test_detect_wallets.py.
+_WORDLIST_FILES: tuple[tuple[str, int], ...] = (
+    ("bip39_english", 2048),
+    ("bip39_chinese_simplified", 2048),
+    ("bip39_chinese_traditional", 2048),
+    ("bip39_czech", 2048),
+    ("bip39_french", 2048),
+    ("bip39_italian", 2048),
+    ("bip39_japanese", 2048),
+    ("bip39_korean", 2048),
+    ("bip39_portuguese", 2048),
+    ("bip39_spanish", 2048),
+    ("electrum_old", 1626),
+    ("monero_english", 1626),
+    ("slip39", 1024),
+)
+
 # What may separate two words of one phrase: whitespace and punctuation
-# (spaces, newlines, commas, JSON quotes, list bullets), optionally carrying
-# a one- or two-digit position number ("1. abandon 2. ability").  The number
-# needs punctuation on both sides, so "float16:" is not a list number.
-# Underscores, letters and long gaps break the run, so snake_case never chains.
+# (spaces, newlines, commas, JSON quotes, list bullets, Japanese ideographic
+# spaces), optionally carrying a one- or two-digit position number
+# ("1. abandon 2. ability").  The number needs punctuation on both sides, so
+# "float16:" is not a list number.  Underscores, letters and long gaps break
+# the run, so snake_case never chains, and neither does unspaced CJK prose.
 _GAP = r"(?:[^\w]{1,16}|[^\w]{1,16}\d{1,2}[^\w]{1,16})"
 _MNEMONIC_GAP = re.compile(_GAP)
-# Pre-filter in C: >= MIN_MNEMONIC_WORDS words of 3-8 letters (the BIP-39
-# English length range) joined by legal gaps.  Prose is full of one- and
-# two-letter words, so this rejects nearly all of it before any per-word
-# Python work happens.
+# One word, by script, from the lists' NFC length ranges: Latin and kana
+# 3-12 letters, Hangul 2-4 syllables, Chinese a single ideograph.
+_PRE_WORD = r"(?:[^\W\d_]{3,12}|[\uac00-\ud7a3]{2}|[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff])"
+# Pre-filter in C: >= MIN_MNEMONIC_WORDS such words joined by legal gaps.
+# Prose is full of one- and two-letter words, so this rejects nearly all of
+# it before any per-word Python work happens.
 _WORD_RUN = re.compile(
-    r"(?<![A-Za-z])(?:[A-Za-z]{3,8}%s){%d,}[A-Za-z]{3,8}(?![A-Za-z])"
-    % (_GAP, MIN_MNEMONIC_WORDS - 1)
+    r"(?<![^\W\d_])(?:%s%s){%d,}%s(?![^\W\d_])"
+    % (_PRE_WORD, _GAP, MIN_MNEMONIC_WORDS - 1, _PRE_WORD)
 )
-_WORD = re.compile(r"[A-Za-z]+")
+# A word token: letters, plus combining marks so decomposed input stays whole.
+_WORD = re.compile(r"(?:[^\W\d_]|[\u0300-\u036f\u3099\u309a])+")
+# Chinese words are single ideographs, and every common character is on the
+# Chinese lists, so code tables such as ``["\u4e00", "\u4e8c", "\u4e09", ...]`` chain
+# under the general gap rule (measured: 5 hits in library Unicode tables).
+# Between two ideographs only whitespace, optionally with a list number,
+# may separate words: the way wallets and people write Chinese phrases.
+_IDEOGRAPH = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+_IDEOGRAPH_GAP = re.compile(r"\s{1,8}(?:\d{1,2}[.)\u3001:\uff1a]\s{0,4})?")
 
 
 @lru_cache(maxsize=1)
+def wordlists() -> dict[str, tuple[str, ...]]:
+    """Every bundled seed wordlist, NFKD-normalised, in list order."""
+    base = resources.files("llm_redactor.detect").joinpath("wordlists")
+    lists: dict[str, tuple[str, ...]] = {}
+    for stem, size in _WORDLIST_FILES:
+        words = base.joinpath(f"{stem}.txt").read_text(encoding="utf-8").split()
+        if len(words) != size:
+            raise RuntimeError(f"wordlists/{stem}.txt is damaged: {len(words)} words, not {size}")
+        lists[stem] = tuple(unicodedata.normalize("NFKD", w) for w in words)
+    return lists
+
+
+@lru_cache(maxsize=1)
+def _vocabulary() -> dict[str, frozenset[str]]:
+    """NFKD word -> the lists containing it (a word can be on several)."""
+    owners: dict[str, set[str]] = {}
+    for stem, words in wordlists().items():
+        for word in words:
+            owners.setdefault(word, set()).add(stem)
+    return {word: frozenset(stems) for word, stems in owners.items()}
+
+
 def bip39_words() -> frozenset[str]:
     """The official BIP-39 English wordlist (2048 words; SHA-256 pinned in tests)."""
-    raw = resources.files("llm_redactor.detect").joinpath("bip39_english.txt")
-    words = raw.read_text(encoding="ascii").split()
-    if len(words) != 2048:
-        raise RuntimeError(f"bip39_english.txt is damaged: {len(words)} words, expected 2048")
-    return frozenset(words)
+    return frozenset(wordlists()["bip39_english"])
 
 
-def _seed_like(run: list[re.Match[str]]) -> Iterator[_Hit]:
+def _seed_like(run: list[re.Match[str]], keys: list[str]) -> Iterator[_Hit]:
     """Yield the parts of one word run that look like a random seed phrase.
 
     Every window of ``MIN_MNEMONIC_WORDS`` with enough distinct words is
@@ -742,11 +809,10 @@ def _seed_like(run: list[re.Match[str]]) -> Iterator[_Hit]:
     """
     if len(run) < MIN_MNEMONIC_WORDS:
         return
-    lowered = [m.group().lower() for m in run]
     span_start = span_end = -1
     for i in range(len(run) - MIN_MNEMONIC_WORDS + 1):
         j = i + MIN_MNEMONIC_WORDS
-        if len(set(lowered[i:j])) < MIN_DISTINCT_WORDS:
+        if len(set(keys[i:j])) < MIN_DISTINCT_WORDS:
             continue
         if i > span_end:  # disjoint from the window being grown
             if span_start >= 0:
@@ -757,8 +823,8 @@ def _seed_like(run: list[re.Match[str]]) -> Iterator[_Hit]:
         yield run[span_start].start(), run[span_end].end(), "crypto_mnemonic"
 
 
-def _without_label(text: str, run: list[re.Match[str]]) -> list[re.Match[str]]:
-    """Drop a leading label such as ``seed:`` or ``"mnemonic":``.
+def _label_end(text: str, run: list[re.Match[str]]) -> int:
+    """How many leading words are a label such as ``seed:`` or ``"mnemonic":``.
 
     "seed" is itself a BIP-39 word, so ``seed: harbor swap ...`` chains the
     label into the run.  A colon (with no list number) after one of the first
@@ -768,34 +834,96 @@ def _without_label(text: str, run: list[re.Match[str]]) -> list[re.Match[str]]:
     for i in range(min(3, len(run) - 1)):
         gap = text[run[i].end() : run[i + 1].start()]
         if ":" in gap and not any(c.isdigit() for c in gap):
-            return run[i + 1 :]
-    return run
+            return i + 1
+    return 0
 
 
-def _mnemonic_runs(text: str, start: int, end: int, words: frozenset[str]) -> Iterator[_Hit]:
+def _judge(text: str, run: list[re.Match[str]], keys: list[str]) -> Iterator[_Hit]:
+    cut = _label_end(text, run)
+    yield from _seed_like(run[cut:], keys[cut:])
+
+
+def _mnemonic_runs(text: str, start: int, end: int) -> Iterator[_Hit]:
+    """Runs of words that all share at least one wordlist (one phrase, one language).
+
+    The lists overlap (the old Electrum list shares 227 words with Monero's,
+    and many with BIP-39), so a phrase can open with words that sit on two
+    lists.  When the next word shares no list with the run so far, the run
+    is judged, and the new run keeps the longest tail that does share a list
+    with that word: otherwise a 12-word Electrum phrase whose first four
+    words are also BIP-39 words would split into 4 + 8 and be missed.
+    """
+    vocabulary = _vocabulary()
     run: list[re.Match[str]] = []
+    keys: list[str] = []
+    owner_sets: list[frozenset[str]] = []
+    shared: frozenset[str] = frozenset()
     for m in _WORD.finditer(text, start, end):
-        if m.group().lower() not in words:
-            yield from _seed_like(_without_label(text, run))
-            run = []
-        elif run and not _MNEMONIC_GAP.fullmatch(text, run[-1].end(), m.start()):
-            yield from _seed_like(_without_label(text, run))
-            run = [m]
-        else:
+        key = unicodedata.normalize("NFKD", m.group().lower())
+        owners = vocabulary.get(key)
+        if owners is None:
+            yield from _judge(text, run, keys)
+            run, keys, owner_sets, shared = [], [], [], frozenset()
+            continue
+        gap_rule = (
+            _IDEOGRAPH_GAP
+            if run and _IDEOGRAPH.fullmatch(m.group()) and _IDEOGRAPH.fullmatch(run[-1].group())
+            else _MNEMONIC_GAP
+        )
+        joined = bool(run) and gap_rule.fullmatch(text, run[-1].end(), m.start()) is not None
+        if joined and shared & owners:
             run.append(m)
-    yield from _seed_like(_without_label(text, run))
+            keys.append(key)
+            owner_sets.append(owners)
+            shared &= owners
+            continue
+        yield from _judge(text, run, keys)
+        keep, carry = len(run), owners
+        while joined and keep > 0 and carry & owner_sets[keep - 1]:
+            carry &= owner_sets[keep - 1]
+            keep -= 1
+        run, keys = [*run[keep:], m], [*keys[keep:], key]
+        owner_sets, shared = [*owner_sets[keep:], owners], carry
+    yield from _judge(text, run, keys)
 
 
 def _scan_mnemonics(text: str) -> Iterator[_Hit]:
-    words = bip39_words()
     for candidate in _WORD_RUN.finditer(text):
-        yield from _mnemonic_runs(text, candidate.start(), candidate.end(), words)
+        yield from _mnemonic_runs(text, candidate.start(), candidate.end())
+
+
+# ── ENS names ────────────────────────────────────────────────────────────
+
+# name.eth / sub.name.eth (second-level labels are at least 3 characters).
+# The look-arounds keep web3 code out: ``w3.eth.get_balance(...)`` is an
+# attribute chain (preceded by ".", followed by "." + name or "(").
+_ENS = re.compile(
+    r"(?<![\w.\-])((?:[a-z0-9\-]+\.)*[a-z0-9\-]{3,}\.eth)(?![\w\-]|\.[\w(]|\()",
+    re.IGNORECASE,
+)
+_ENS_CODE_NAMES = ("web3.eth", "w3.eth", "self.eth", "this.eth", "ethers.eth")
+
+
+_ENS_HINT = re.compile(r"(?i)\.eth(?![\w\-])")
+
+
+def _scan_ens(text: str) -> Iterator[_Hit]:
+    # The full pattern backtracks over every dotted identifier in a text
+    # (~0.6 s per 20 MB of code); almost no text contains ".eth" at all.
+    if not _ENS_HINT.search(text):
+        return
+    for m in _ENS.finditer(text):
+        name = m.group(1).lower()
+        if name in _ENS_CODE_NAMES or name.endswith(tuple("." + n for n in _ENS_CODE_NAMES)):
+            continue
+        yield m.start(1), m.end(1), "crypto_ens"
 
 
 # ── Entry point ──────────────────────────────────────────────────────────
 
 _SCANNERS: tuple[Callable[[str], Iterator[_Hit]], ...] = (
     _scan_mnemonics,
+    _scan_ens,
     _scan_keypair_arrays,
     _scan_hex,
     _scan_evm,

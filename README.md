@@ -498,7 +498,8 @@ policy:
 | | `crypto_xmr` / `crypto_ada` / `crypto_dot` | regex | Monero, Cardano (Shelley + Byron), Polkadot/Kusama/Substrate SS58 |
 | | `crypto_cosmos` / `crypto_xlm` / `crypto_algo` | regex | Cosmos-SDK bech32 (cosmos, osmo, …), Stellar, Algorand (checksum-validated) |
 | | `crypto_lightning` | regex | Lightning BOLT11 invoice / LNURL |
-| | `crypto_address` | regex | Checksum-valid address of a chain not listed above |
+| | `crypto_address` | regex | Checksum-valid address of a chain not listed above; Aptos/Sui `0x` + 64-hex when a Move-chain keyword is nearby |
+| | `crypto_ens` | regex | ENS name (`name.eth`), which resolves to an address |
 | | `crypto_xpub` | regex | BIP32 extended public key (xpub/ypub/zpub/tpub/…): reveals every wallet address |
 | | `crypto_public_key` | regex | secp256k1 hex public key (on-curve check), Tezos/Cardano/Cosmos/Nostr public keys, Ethereum validator (BLS) key |
 | | `crypto_wallet` | NER | Crypto wallet address (Presidio, Bitcoin only) |
@@ -557,7 +558,7 @@ policy:
 | | `pgp_private_key` | regex | PGP private key block |
 | | `crypto_private_key` | regex | Wallet private key: WIF, BIP38, hex near a "private key"-style keyword, Solana/NEAR keypair (JSON array or base58, verified), XRP/Stellar seeds, Tezos/Cardano/Sui/Nostr secret keys |
 | | `crypto_xprv` | regex | BIP32 extended private key (xprv/yprv/zprv/tprv/…) |
-| | `crypto_mnemonic` | regex | BIP-39 seed phrase (12–24 English words; also Algorand 25-word) |
+| | `crypto_mnemonic` | regex | Seed phrase: BIP-39 in all 10 official languages (incl. Algorand 25, Polyseed 16), Monero 25/13, SLIP-39 shares, old Electrum 12 |
 | **infrastructure** | `connection_string` | regex | Database / message broker URI |
 | | `hostname_internal` | regex | Internal hostname (`.internal`, `.corp`, etc.) |
 | | `mac_address` | regex | MAC address |
@@ -576,11 +577,15 @@ positives near zero. Limits worth knowing:
   `private key`, `PRIVATE_KEY`, `--private-key`, `secret`, `seed`,
   `accounts: [` or `new Wallet(` appears within 200 characters. Without
   context it is indistinguishable from a tx hash or a SHA-256 digest.
-- **Seed phrases** must be at least 12 consecutive BIP-39 English words
-  with at least 10 distinct words in some 12-word window. This keeps out
-  repetitive code like `(False,), (True,)` tables. The public zero-entropy
-  test vector (`abandon` ×11 + `about`) is deliberately not redacted. Other
-  languages' wordlists are not supported.
+- **Seed phrases** must be at least 12 consecutive words from one wordlist,
+  with at least 10 distinct words in some 12-word window. Supported lists:
+  BIP-39 in all 10 official languages, Monero, SLIP-39 and old (pre-2.0)
+  Electrum. The distinct-word rule keeps out repetitive code like
+  `(False,), (True,)` tables. The public zero-entropy test vector
+  (`abandon` ×11 + `about`) is deliberately not redacted. Chinese words are
+  single characters, so they must be separated by whitespace, as wallets
+  write them. Unspaced Chinese text and quoted character tables in code
+  never match.
 - **Solana addresses** have no checksum: 32–44 char base58 that decodes to
   exactly 32 bytes. camelCase identifiers and fragments of base64 blobs are
   excluded. A short allowlist of public program IDs, mints and EVM

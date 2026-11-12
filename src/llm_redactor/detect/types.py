@@ -78,6 +78,7 @@ CATEGORY_MAP: dict[str, str] = {
     "crypto_algo": "financial",
     "crypto_xtz": "financial",
     "crypto_lightning": "financial",
+    "crypto_ens": "financial",
     "crypto_address": "financial",
     "crypto_xpub": "financial",
     "crypto_public_key": "financial",

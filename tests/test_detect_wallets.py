@@ -369,20 +369,45 @@ def test_solana_address_in_explorer_url() -> None:
 # ── seed phrases ─────────────────────────────────────────────────────────
 
 
-def bip39_mnemonic(entropy: bytes) -> list[str]:
+WORDLISTS = Path(wallets.__file__).with_name("wordlists")
+
+
+def bip39_mnemonic(entropy: bytes, language: str = "english") -> list[str]:
     """BIP-39 entropy -> words, checksum included (straight from the spec)."""
-    wordlist = Path(wallets.__file__).with_name("bip39_english.txt").read_text().split()
+    wordlist = (WORDLISTS / f"bip39_{language}.txt").read_text(encoding="utf-8").split()
     bits = bin(int.from_bytes(entropy, "big"))[2:].zfill(len(entropy) * 8)
     check = bin(hashlib.sha256(entropy).digest()[0])[2:].zfill(8)[: len(entropy) * 8 // 32]
     bits += check
     return [wordlist[int(bits[i : i + 11], 2)] for i in range(0, len(bits), 11)]
 
 
-def test_wordlist_is_the_official_bip39_english_list() -> None:
-    data = Path(wallets.__file__).with_name("bip39_english.txt").read_bytes()
-    assert hashlib.sha256(data).hexdigest() == (
-        "2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda"
-    )
+# Provenance of every bundled list, pinned so corruption or a hand edit fails
+# loudly.  BIP-39: bitcoin/bips bip-0039/*.txt, byte for byte (these are the
+# hashes published with BIP-39).  SLIP-39: satoshilabs/slips
+# slip-0039/wordlist.txt, byte for byte.  electrum_old: the 1626-word list
+# literal in spesmilo/electrum electrum/old_mnemonic.py; monero_english: the
+# words of monero-project/monero src/mnemonics/english.h, one per line.
+WORDLIST_SHA256 = {
+    "bip39_chinese_simplified": "5c5942792bd8340cb8b27cd592f1015edf56a8c5b26276ee18a482428e7c5726",
+    "bip39_chinese_traditional": "417b26b3d8500a4ae3d59717d7011952db6fc2fb84b807f3f94ac734e89c1b5f",
+    "bip39_czech": "7e80e161c3e93d9554c2efb78d4e3cebf8fc727e9c52e03b83b94406bdcc95fc",
+    "bip39_english": "2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda",
+    "bip39_french": "ebc3959ab7801a1df6bac4fa7d970652f1df76b683cd2f4003c941c63d517e59",
+    "bip39_italian": "d392c49fdb700a24cd1fceb237c1f65dcc128f6b34a8aacb58b59384b5c648c2",
+    "bip39_japanese": "2eed0aef492291e061633d7ad8117f1a2b03eb80a29d0e4e3117ac2528d05ffd",
+    "bip39_korean": "9e95f86c167de88f450f0aaf89e87f6624a57f973c67b516e338e8e8b8897f60",
+    "bip39_portuguese": "2685e9c194c82ae67e10ba59d9ea5345a23dc093e92276fc5361f6667d79cd3f",
+    "bip39_spanish": "46846a5a0139d1e3cb77293e521c2865f7bcdb82c44e8d0a06a2cd0ecba48c0b",
+    "electrum_old": "c8da327d316f8ee758b790068e618077ac271a89fd77ec1250c59ae40e7b599e",
+    "monero_english": "eaa6bce7dd92f4d6dd74f224264e0ef4ad21095d68ec77616b26ceb599baf4f7",
+    "slip39": "bcc4555340332d169718aed8bf31dd9d5248cb7da6e5d355140ef4f1e601eec3",
+}
+
+
+@pytest.mark.parametrize("stem,digest", WORDLIST_SHA256.items())
+def test_bundled_wordlists_are_the_published_ones(stem: str, digest: str) -> None:
+    assert hashlib.sha256((WORDLISTS / f"{stem}.txt").read_bytes()).hexdigest() == digest
+    assert stem in wallets.wordlists()  # and the detector loads every one of them
     assert len(bip39_words()) == 2048
 
 
@@ -430,6 +455,79 @@ def test_short_runs_and_repetitive_code_are_not_seed_phrases() -> None:
 def test_prose_does_not_look_like_a_seed_phrase() -> None:
     readme = (Path(__file__).parents[1] / "README.md").read_text()
     assert [s for s in detect_wallets(readme) if s.kind == "crypto_mnemonic"] == []
+
+
+def _detected_phrase(text: str) -> str:
+    hits = kinds(text)
+    assert [k for k, _ in hits] == ["crypto_mnemonic"], hits
+    return hits[0][1]
+
+
+@pytest.mark.parametrize(
+    "language,sep",
+    [
+        ("spanish", " "),  # accented words typed composed (NFC); the list is NFKD
+        ("french", " "),
+        ("czech", " "),
+        ("italian", " "),
+        ("portuguese", " "),
+        ("japanese", "\u3000"),  # wallets join Japanese words with ideographic spaces
+        ("korean", " "),  # Hangul typed as composed syllables, list decomposed
+        ("chinese_simplified", " "),
+        ("chinese_traditional", " "),
+    ],
+)
+def test_seed_phrases_in_other_bip39_languages(language: str, sep: str) -> None:
+    import unicodedata
+
+    words = bip39_mnemonic(random.Random(language).randbytes(16), language)
+    phrase = sep.join(unicodedata.normalize("NFC", w) for w in words)
+    assert _detected_phrase(f"backup:\n{phrase}\n") == phrase
+
+
+def test_unspaced_chinese_prose_is_not_a_seed_phrase() -> None:
+    # Chinese prose is made of exactly the characters on the Chinese lists;
+    # only space-separated characters may chain.
+    words = (WORDLISTS / "bip39_chinese_simplified.txt").read_text(encoding="utf-8").split()
+    prose = "".join(random.Random(5).sample(words, 60))
+    assert kinds(prose) == []
+
+
+def test_monero_slip39_and_old_electrum_phrases() -> None:
+    monero = (
+        "sequence atlas unveil summon pebbles tuesday beer rudely snake rockets different "
+        "fuselage woven tagged bested dented vegan hover rapid fawns obvious muppet randomly "
+        "seasons randomly"
+    )  # a widely published Monero example seed (checksum word last)
+    assert _detected_phrase(f"monero seed: {monero}") == monero
+    share = (
+        "duckling enlarge academic academic agency result length solution fridge kidney "
+        "coal piece deal husband erode duke ajar critical decision keyboard"
+    )  # SLIP-39 test vector 1
+    assert _detected_phrase(share) == share
+    old = (WORDLISTS / "electrum_old.txt").read_text().split()
+    electrum = " ".join(random.Random(12).sample(old, 12))
+    assert _detected_phrase(f"electrum seed: {electrum}") == electrum
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("pay vitalik.eth or treasury.dao.eth", ["vitalik.eth", "treasury.dao.eth"]),
+        ("balance = w3.eth.get_balance(addr)", []),  # web3.py attribute chain
+        ("call web3.eth for the block", []),
+        ("from foo.ethereum import x", []),
+    ],
+)
+def test_ens_names(text: str, expected: list[str]) -> None:
+    assert [t for k, t in kinds(text) if k == "crypto_ens"] == expected
+
+
+def test_move_chain_addresses_need_a_chain_keyword() -> None:
+    addr = "0x" + "a1" * 32
+    assert only(f"aptos account fund-with-faucet --account {addr}", addr) == "crypto_address"
+    assert only(f"sui client object {addr}", addr) == "crypto_address"
+    assert kinds(f"digest {addr}") == []  # without context it may be any hash
 
 
 # ── integration with the rest of detection ───────────────────────────────
