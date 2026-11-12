@@ -79,9 +79,15 @@ def serve(
     # Hand the config to workers via the environment (inherited across spawn).
     os.environ["LLM_REDACTOR_CONFIG"] = str(path)
     os.environ["LLM_REDACTOR_PORT"] = str(port)
+    # LLM_REDACTOR_UPSTREAM is parent->worker plumbing, not a user setting:
+    # an exported one used to override the YAML endpoint in every worker
+    # while the banner below printed the YAML value.  (The user-facing
+    # override is LLM_REDACTOR_CLOUD_ENDPOINT, applied by load_config.)
     if upstream:
         os.environ["LLM_REDACTOR_UPSTREAM"] = upstream
         console.print(f"[dim]Upstream override: {upstream}[/dim]")
+    else:
+        os.environ.pop("LLM_REDACTOR_UPSTREAM", None)
 
     configure_logging()
 

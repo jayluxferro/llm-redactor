@@ -62,7 +62,7 @@ def _placeholder_session_tag(body: dict[str, Any], pipeline: OptionBPipeline) ->
     """
     if not pipeline.config.pipeline.placeholder_request_tag:
         return None
-    mode = getattr(pipeline.config.pipeline, "placeholder_tag_mode", "per_request")
+    mode = pipeline.config.pipeline.placeholder_tag_mode
     if mode != "per_conversation":
         return secrets.token_hex(4)
     system = body.get("system")
@@ -1213,18 +1213,15 @@ async def redactor_config() -> JSONResponse:
                     "model_configured": bool(cfg.pipeline.image_redaction.model_path),
                 },
                 "placeholder_request_tag": cfg.pipeline.placeholder_request_tag,
-                "placeholder_tag_mode": getattr(
-                    cfg.pipeline, "placeholder_tag_mode", "per_request"
-                ),
+                "placeholder_tag_mode": cfg.pipeline.placeholder_tag_mode,
+                "tool_content_ner": cfg.pipeline.tool_content_ner,
             },
             "transport": {
                 "tools_policy": cfg.transport.tools_policy,
+                "unknown_path_policy": cfg.transport.unknown_path_policy,
                 "mcp_session_cap": cfg.transport.mcp_session_cap,
             },
-            "cloud_target": {
-                "backend": cfg.cloud_target.backend,
-                "endpoint": cfg.cloud_target.endpoint,
-            },
+            "cloud_target": {"endpoint": cfg.cloud_target.endpoint},
             "policy": {"categories": cfg.policy.categories},
         }
     )

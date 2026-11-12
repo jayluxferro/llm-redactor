@@ -1,6 +1,5 @@
 version: 1
 local_model:
-  backend: ollama
   endpoint: http://127.0.0.1:11434
   chat_model: llama3.2:3b
 pipeline:
@@ -14,7 +13,7 @@ pipeline:
   image_redaction:
     enabled: false
     license_acknowledged: false
-    model_path: /Volumes/Lux/dev/ml/mcp/llm-redactor/models/screenpipe/rfdetr_v13.onnx
+    model_path: ~/models/screenpipe/rfdetr_v13.onnx  # wherever you saved it
     input_size: 384
     score_threshold: 0.8
 policy:

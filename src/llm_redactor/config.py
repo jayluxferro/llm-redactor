@@ -9,10 +9,15 @@ from typing import Any
 
 import yaml
 
+# Keys that used to exist but were never read (``backend`` here and on
+# cloud_target, ``transport.http`` / ``transport.mcp``,
+# ``policy.strict_refuse_on_unknown_sensitive``) were removed; old configs
+# still load, with an "ignoring unknown key" warning per stale key.
+
 
 @dataclass
 class LocalModelConfig:
-    backend: str = "ollama"
+    # Ollama is the only local backend.
     endpoint: str = "http://127.0.0.1:11434"
     chat_model: str = "llama3.2:3b"
     ner_model: str | None = None  # e.g. en_core_web_trf, xx_ent_wiki_sm
@@ -33,7 +38,8 @@ class LocalModelConfig:
 
 @dataclass
 class CloudTargetConfig:
-    backend: str = "openai_compat"
+    # The API family is chosen per request path (/v1/chat/completions vs
+    # /v1/messages), not by a setting.
     endpoint: str = "https://api.openai.com/v1"
     api_key_env: str = "OPENAI_API_KEY"
 
@@ -139,6 +145,9 @@ class PipelineConfig:
     # code, where NER costs ~3 s per 100 KB uncached and tags identifiers as
     # organisations or people.
     tool_content_ner: bool = True
+    # Only opt_b_redact (and its strict flag) is used by `serve` and `mcp`.
+    # The other options exist for the evaluation harness (evals/runner.py);
+    # setting them in a proxy config changes nothing.
     opt_a_local_only: OptionConfig = field(default_factory=OptionConfig)
     opt_b_redact: OptionBConfig = field(default_factory=OptionBConfig)
     opt_c_rephrase: OptionCConfig = field(default_factory=OptionCConfig)
@@ -151,7 +160,6 @@ class PipelineConfig:
 
 @dataclass
 class PolicyConfig:
-    strict_refuse_on_unknown_sensitive: bool = True
     categories: list[str] = field(
         # A generic proxy must protect every family unless an operator explicitly
         # narrows its policy.  ``all`` is expanded by ``resolve_categories``.
@@ -162,9 +170,7 @@ class PolicyConfig:
 
 @dataclass
 class TransportConfig:
-    mcp: bool = True
-    http: bool = True
-    http_port: int = 7789
+    http_port: int = 7789  # used by `serve` unless --port is given
     # OpenAI-format requests that carry `tools` / `functions`:
     #   redact (default): redact messages, tool results and tool-call
     #     arguments like any request; tool schemas are forwarded untouched.
@@ -295,6 +301,8 @@ def _validate_transport_choices(config: Config) -> None:
 
 
 def _validate(config: Config) -> Config:
+    if config.version != 1:
+        raise ValueError(f"unsupported config version {config.version!r} (expected 1)")
     _validate_api_key_env(config)
     _validate_transport_choices(config)
     return config

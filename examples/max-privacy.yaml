@@ -16,17 +16,14 @@
 #   uv run llm-redactor serve --port 7789
 
 cloud_target:
-  backend: openai_compat
   endpoint: https://api.openai.com/v1
   api_key_env: OPENAI_API_KEY
 
 local_model:
-  backend: ollama
   endpoint: http://127.0.0.1:11434
   chat_model: llama3.2:3b
 
 transport:
-  http: true
   http_port: 7789
 
 pipeline:
@@ -45,5 +42,4 @@ pipeline:
   opt_c_rephrase: { enabled: true, require_validator_pass: true }
 
 policy:
-  strict_refuse_on_unknown_sensitive: true
   categories: [pii, secret, org_identifier, customer_name]

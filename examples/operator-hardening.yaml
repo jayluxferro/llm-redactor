@@ -2,7 +2,6 @@
 version: 1
 
 local_model:
-  backend: ollama
   endpoint: http://127.0.0.1:11434
   chat_model: llama3.2:3b
   # ner_model: xx_ent_wiki_sm   # optional multilingual NER (install model weights)

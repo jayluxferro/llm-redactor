@@ -141,3 +141,44 @@ def test_custom_patterns_load_everywhere_and_survive_the_default_policy(tmp_path
         assert [(s.kind, s.text) for s in spans] == [("project_code", "PROJ-1234")]
     finally:
         regex._custom_patterns.pop("project_code", None)
+
+
+def test_removed_keys_warn_and_unsupported_version_fails(tmp_path, caplog) -> None:
+    import logging
+
+    import pytest
+
+    from llm_redactor.config import load_config
+
+    old = tmp_path / "old.yaml"
+    old.write_text(
+        "cloud_target:\n  backend: openai_compat\ntransport:\n  http: true\n"
+        "policy:\n  strict_refuse_on_unknown_sensitive: false\n"
+    )
+    with caplog.at_level(logging.WARNING, logger="llm_redactor.config"):
+        load_config(old)  # still loads
+    text = " ".join(r.getMessage() for r in caplog.records)
+    for key in (
+        "cloud_target.backend",
+        "transport.http",
+        "policy.strict_refuse_on_unknown_sensitive",
+    ):
+        assert key in text
+    future = tmp_path / "future.yaml"
+    future.write_text("version: 2\n")
+    with pytest.raises(ValueError, match="version"):
+        load_config(future)
+
+
+def test_every_example_config_loads_without_warnings(caplog) -> None:
+    import logging
+    from pathlib import Path
+
+    from llm_redactor.config import load_config
+
+    examples = sorted((Path(__file__).parents[1] / "examples").glob("*.yaml"))
+    assert examples
+    with caplog.at_level(logging.WARNING, logger="llm_redactor.config"):
+        for path in examples:
+            load_config(path)
+    assert [r.getMessage() for r in caplog.records] == []

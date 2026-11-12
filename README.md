@@ -102,7 +102,7 @@ uv run llm-redactor serve --port 7789
 ```bash
 # Claude Code (Anthropic Messages API). No /v1 here: Claude Code appends
 # /v1/messages itself. The proxy's cloud_target must then be Anthropic,
-# e.g. examples/anthropic-default.yaml.
+# e.g. examples/anthropic.yaml.
 export ANTHROPIC_BASE_URL=http://localhost:7789
 claude
 
@@ -359,7 +359,7 @@ the other modes, not a replacement for the detector.
 For maximum coverage, run the proxy AND load the MCP tools:
 
 ```bash
-# Terminal 1: proxy (cloud_target: Anthropic, see examples/anthropic-default.yaml)
+# Terminal 1: proxy (cloud_target: Anthropic, see examples/anthropic.yaml)
 uv run llm-redactor serve --port 7789
 
 # Terminal 2: agent with both proxy and MCP
@@ -392,7 +392,7 @@ Copy one of the example configs as your starting point:
 | [`cloud-redact.yaml`](examples/cloud-redact.yaml) | Proxy | Redact PII/secrets, forward to OpenAI | 15.3% |
 | [`cloud-redact-rephrase.yaml`](examples/cloud-redact-rephrase.yaml) | Proxy | Redact + rephrase implicit identity | 13.9% |
 | [`max-privacy.yaml`](examples/max-privacy.yaml) | Proxy | A+B+C: local routing + redact + rephrase | **0.6%** |
-| [`anthropic-default.yaml`](examples/anthropic-default.yaml) | Proxy | Redact for Anthropic Claude API | 15.3% |
+| [`anthropic.yaml`](examples/anthropic.yaml) | Proxy | Redact for Anthropic Claude API | 15.3% |
 | [`mcp-with-cloud.yaml`](examples/mcp-with-cloud.yaml) | MCP | `llm.chat` tool with cloud backend | 15.3% |
 | [`strict.yaml`](examples/strict.yaml) | Proxy | Refuse on low-confidence detections | varies |
 
