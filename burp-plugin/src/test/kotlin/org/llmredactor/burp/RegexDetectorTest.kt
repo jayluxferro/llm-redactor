@@ -4,268 +4,154 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
+/**
+ * Spot checks with readable expectations. Exhaustive agreement with the
+ * Python detectors is ParityTest's job; these pin the behaviours that were
+ * once wrong here and the ones this file's readers will look for.
+ */
 class RegexDetectorTest {
     private val detector = RegexDetector()
 
-    // ── Pattern smoke tests: one positive + one negative per pattern ──
+    private fun kinds(text: String) = detector.detect(text).map { it.kind }
+
+    private fun covered(text: String) = detector.detect(text).map {
+        text.substring(text.offsetByCodePoints(0, it.start), text.offsetByCodePoints(0, it.end))
+    }
 
     @Test fun `detects email address`() {
-        val spans = detector.detect("contact alice@example.com for info")
-        assertEquals(1, spans.size)
-        assertEquals("email", spans[0].kind)
-        assertTrue(spans[0].start < spans[0].end)
+        assertEquals(listOf("alice@example.com"), covered("contact alice@example.com for info"))
+        assertEquals(listOf("email"), kinds("contact alice@example.com for info"))
     }
 
-    @Test fun `does not flag non-email text as email`() {
-        val spans = detector.detect("not-an-email just some text")
-        assertTrue(spans.none { it.kind == "email" })
+    @Test fun `phone numbers use the Python kinds`() {
+        assertEquals(listOf("phone_us"), kinds("call 555-123-4567 today"))
+        assertEquals(listOf("phone_intl"), kinds("office +44 20 7946 0958"))
+        assertEquals(emptyList(), kinds("code 12345 is short"))
     }
 
-    @Test fun `detects phone number`() {
-        val spans = detector.detect("call 555-123-4567 today")
-        assertEquals(1, spans.size)
-        assertEquals("phone", spans[0].kind)
+    @Test fun `version numbers and timestamps are not phone numbers`() {
+        // The old catch-all phone pattern took any 6+ digits in 2-4 digit groups.
+        assertEquals(emptyList(), kinds("release 2.4.1 build 20261112 port 8080 id 123456"))
     }
 
-    @Test fun `does not flag short digit string as phone`() {
-        val spans = detector.detect("code 12345 is short")
-        assertTrue(spans.none { it.kind == "phone" })
+    @Test fun `detects SSN and not the wrong shape`() {
+        assertEquals(listOf("ssn"), kinds("123-45-6789"))
+        assertEquals(emptyList(), kinds("123-456-789 has wrong segment lengths"))
     }
 
-    @Test fun `detects SSN`() {
-        // 123-45-6789 may also match phone (digit groups with dashes).
-        // The important thing is that it's detected and redacted.
-        val spans = detector.detect("123-45-6789")
-        assertEquals(1, spans.size)
-        assertTrue(spans[0].kind in setOf("ssn", "phone"))
-    }
-
-    @Test fun `does not flag wrong-format SSN`() {
-        val spans = detector.detect("123-456-789 has wrong segment lengths")
-        assertTrue(spans.none { it.kind == "ssn" })
-    }
-
-    @Test fun `detects IPv4 address`() {
-        val spans = detector.detect("server at 192.168.1.1 is up")
-        assertEquals(1, spans.size)
-        assertEquals("ip_v4", spans[0].kind)
-    }
-
-    @Test fun `does not flag out-of-range octets as IPv4`() {
-        val spans = detector.detect("999.999.999.999 is not valid")
-        assertTrue(spans.none { it.kind == "ip_v4" })
+    @Test fun `detects IPv4 and IPv6`() {
+        assertEquals(listOf("ip_v4"), kinds("server at 192.168.1.1 is up"))
+        assertEquals(listOf("ip_v6"), kinds("host fe80:0000:0000:0000:0202:b3ff:fe1e:8329"))
+        assertEquals(emptyList(), kinds("999.999.999.999 is not valid"))
     }
 
     @Test fun `detects credit card number`() {
-        // 4111-1111-1111-1111 also matches the phone pattern (digit groups with dashes).
-        // Either credit_card or phone detection confirms the number is caught.
-        val spans = detector.detect("card 4111-1111-1111-1111 paid")
-        assertEquals(1, spans.size)
-        assertTrue(spans[0].kind in setOf("credit_card", "phone"))
+        assertEquals(listOf("credit_card"), kinds("card 4111-1111-1111-1111 paid"))
+        assertTrue("credit_card" !in kinds("1234-5678-9012-3456 has wrong prefix"))
     }
 
-    @Test fun `does not flag non-payment card prefix as credit card`() {
-        val spans = detector.detect("1234-5678-9012-3456 has wrong prefix")
-        assertTrue(spans.none { it.kind == "credit_card" })
+    @Test fun `checksummed identifiers must validate`() {
+        assertEquals(listOf("iban"), kinds("GB82 WEST 1234 5698 7654 32"))
+        assertEquals(emptyList(), kinds("GB82 WEST 1234 5698 7654 33"))
+        assertEquals(listOf("npi"), kinds("NPI 1234567893"))
+        assertTrue("npi" !in kinds("NPI 1234567890"))
     }
 
-    @Test fun `detects password assignment`() {
-        val spans = detector.detect("config: password=secret123 is set")
-        assertEquals(1, spans.size)
-        assertEquals("password", spans[0].kind)
-    }
-
-    @Test fun `does not flag very short password value`() {
-        val spans = detector.detect("password=ab is too short")
-        assertTrue(spans.none { it.kind == "password" })
+    @Test fun `password assignments, quoted values whole`() {
+        assertEquals(listOf("secret123"), covered("config: password=secret123 is set"))
+        assertEquals(listOf("my secret passphrase here"), covered("PASSWORD=\"my secret passphrase here\""))
+        assertEquals(listOf("C!UNSFj!p9AM"), covered("\"password\": \"C!UNSFj!p9AM\""))
+        assertEquals(emptyList(), kinds("password=ab is too short"))
     }
 
     @Test fun `detects connection string`() {
-        val spans = detector.detect("url: mongodb://user:pass@host:27017/db")
-        assertEquals(1, spans.size)
-        assertEquals("connection_string", spans[0].kind)
+        assertEquals(listOf("connection_string"), kinds("url: mongodb://user:pass@host:27017/db"))
+        assertEquals(emptyList(), kinds("mongodb://short"))
     }
 
-    @Test fun `does not flag short db url as connection string`() {
-        val spans = detector.detect("mongodb://short")
-        assertTrue(spans.none { it.kind == "connection_string" })
+    @Test fun `cloud and vendor keys`() {
+        assertEquals(listOf("aws_access_key"), kinds("key AKIAIOSFODNN7EXAMPLE is aws"))
+        assertEquals(listOf("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"), covered("\"aws_secret_key\": \"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\""))
+        assertEquals(listOf("gcp_api_key"), kinds("key AIza" + "a".repeat(35) + " here"))
+        assertEquals(listOf("openai_api_key"), kinds("sk-proj-abc123def456ghi789jkl012mno345pqr678stu"))
+        assertEquals(listOf("github_token"), kinds("ghp_abc123def456ghi789jkl012mno345pqr678stu"))
+        assertEquals(listOf("github_token"), kinds("github_pat_" + "AbCdEfGhIjKlMnOpQrStUv" + "_" + "a".repeat(59)))
+        assertEquals(listOf("gitlab_token"), kinds("glpat-abc123def456ghi789jkl012"))
+        assertEquals(listOf("stripe_key"), kinds("key rk_test_fakeStripeTestKeyForUnitTests"))
+        assertEquals(listOf("huggingface_token"), kinds("use hf_" + "a".repeat(34)))
     }
 
-    @Test fun `detects AWS access key`() {
-        val spans = detector.detect("key AKIAIOSFODNN7EXAMPLE is aws")
-        assertEquals(1, spans.size)
-        assertEquals("aws_access_key", spans[0].kind)
+    @Test fun `generic assignments and auth headers`() {
+        assertEquals(listOf("generic_api_key"), kinds("api_key=abc123def456ghi789jkl012"))
+        assertEquals(listOf("bearer_token"), kinds("Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345"))
+        assertEquals(listOf("jwt"), kinds("jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"))
     }
 
-    @Test fun `does not flag truncated AWS key`() {
-        val spans = detector.detect("AKIA123 is too short")
-        assertTrue(spans.none { it.kind == "aws_access_key" })
+    @Test fun `a PEM private key is covered from BEGIN to END`() {
+        // The old pattern matched the BEGIN line alone and sent the key body upstream.
+        val pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA0Aq4X9Z\n-----END RSA PRIVATE KEY-----"
+        assertEquals(listOf(pem), covered("key:\n$pem\nthanks"))
+        val ssh = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----"
+        assertEquals(listOf("ssh_private_key"), kinds(ssh))
     }
 
-    @Test fun `detects GCP API key`() {
-        // GCP keys: "AIza" + exactly 35 chars of base64url. Use 35 'a' chars.
-        val key = "AIza" + "a".repeat(35)
-        val spans = detector.detect("key $key here")
-        assertEquals(1, spans.size)
-        assertEquals("gcp_api_key", spans[0].kind)
+    @Test fun `internal hostnames are covered whole`() {
+        assertEquals(listOf("db.staging.internal"), covered("connect to db.staging.internal"))
+        // Stopping at the internal label left ".globex.net" in the clear.
+        assertEquals(listOf("cache-04.corp.globex.net"), covered("cache-04.corp.globex.net"))
+        assertEquals(emptyList(), kinds("example.com is public"))
     }
 
-    @Test fun `detects OpenAI API key`() {
-        val spans = detector.detect("sk-proj-abc123def456ghi789jkl012mno345pqr678stu")
-        assertEquals(1, spans.size)
-        assertEquals("openai_api_key", spans[0].kind)
+    @Test fun `wallets, keys and seed phrases`() {
+        assertEquals(listOf("crypto_btc"), kinds("send to 1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"))
+        assertEquals(listOf("crypto_btc"), kinds("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"))
+        assertEquals(listOf("crypto_eth"), kinds("0x742d35Cc6634C0532925a3b844Bc454e4438f44e"))
+        assertEquals(listOf("crypto_dot"), kinds("5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"))
+        assertEquals(listOf("crypto_private_key"), kinds("KwdMAjGmerYanjeui5SHS7JkmpZvVipYvB2LJGU1ZxJwYvP98617"))
+        assertEquals(
+            listOf("crypto_private_key"),
+            kinds("PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"),
+        )
+        // A bare 32-byte hex value is usually a hash: no key keyword, no redaction.
+        assertEquals(emptyList(), kinds("tx 0x5c504ed432cb51138bcf09aa5e8a410dd4a1e204ef84bfed1be16dfba1b22060 mined"))
+        val seed = "legal winner thank year wave sausage worth useful legal winner thank yellow"
+        assertEquals(emptyList(), kinds(seed)) // the public test vector: 4 repeated words, not random
+        val phrase = "abandon ability able about above absent absorb abstract absurd abuse access accident"
+        assertEquals(listOf(phrase), covered("seed: $phrase"))
     }
 
-    @Test fun `detects Anthropic API key`() {
-        // sk-ant-api03-... matches both openai_api_key (sk- prefix) and anthropic_api_key.
-        // The openai pattern appears first in the map; dedup keeps the earlier-starting match.
-        val key = "sk-ant-api03-" + "a".repeat(20)
-        val spans = detector.detect("key $key here")
-        assertEquals(1, spans.size)
-        assertTrue(spans[0].kind in setOf("openai_api_key", "anthropic_api_key"))
+    @Test fun `mistyped addresses fail their checksum and pass`() {
+        assertEquals(emptyList(), kinds("send to 1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN3"))
     }
 
-    @Test fun `detects GitHub token`() {
-        val spans = detector.detect("ghp_abc123def456ghi789jkl012mno345pqr678stu")
-        assertEquals(1, spans.size)
-        assertEquals("github_token", spans[0].kind)
-    }
+    // ── overlap merging ──
 
-    @Test fun `detects GitLab token`() {
-        val spans = detector.detect("glpat-abc123def456ghi789jkl012")
-        assertEquals(1, spans.size)
-        assertEquals("gitlab_token", spans[0].kind)
-    }
-
-    @Test fun `detects Slack token`() {
-        // Use xoxp- (not xoxb-) to avoid GitHub push-protection false positive.
-        val spans = detector.detect("token xoxp-fake-test-slack-token-for-unit-tests")
-        assertEquals(1, spans.size)
-        assertEquals("slack_token", spans[0].kind)
-    }
-
-    @Test fun `detects Stripe key`() {
-        // Use rk_test_ (restricted test key) to avoid GitHub push-protection false positive.
-        val spans = detector.detect("key rk_test_fakeStripeTestKeyForUnitTests")
-        assertEquals(1, spans.size)
-        assertEquals("stripe_key", spans[0].kind)
-    }
-
-    @Test fun `detects generic API key`() {
-        val spans = detector.detect("api_key=abc123def456ghi789jkl012")
-        assertEquals(1, spans.size)
-        assertEquals("generic_api_key", spans[0].kind)
-    }
-
-    @Test fun `detects bearer token`() {
-        val spans = detector.detect("Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345")
-        assertEquals(1, spans.size)
-        assertEquals("bearer_token", spans[0].kind)
-    }
-
-    @Test fun `detects JWT token`() {
-        val spans = detector.detect("token: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U")
-        assertEquals(1, spans.size)
-        assertEquals("jwt", spans[0].kind)
-    }
-
-    @Test fun `detects PEM private key header`() {
-        val spans = detector.detect("-----BEGIN PRIVATE KEY-----")
-        assertEquals(1, spans.size)
-        assertEquals("private_key_pem", spans[0].kind)
-    }
-
-    @Test fun `detects RSA private key header`() {
-        val spans = detector.detect("-----BEGIN RSA PRIVATE KEY-----")
-        assertEquals(1, spans.size)
-        assertEquals("private_key_pem", spans[0].kind)
-    }
-
-    @Test fun `detects internal hostname`() {
-        val spans = detector.detect("connect to db.staging.internal")
-        assertEquals(1, spans.size)
-        assertEquals("hostname_internal", spans[0].kind)
-    }
-
-    @Test fun `does not flag public domain as internal hostname`() {
-        val spans = detector.detect("example.com is public")
-        assertTrue(spans.none { it.kind == "hostname_internal" })
-    }
-
-    // ── Overlap deduplication ──
-
-    @Test fun `deduplicates overlapping spans keeping earliest`() {
-        // "Bearer eyJ..." triggers bearer_token (whole thing) and jwt (just the JWT part)
-        // The bearer span covers the JWT span — only bearer should survive.
-        val token = "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
-        val spans = detector.detect(token)
-        val kinds = spans.map { it.kind }.toSet()
-        // jwt overlaps with bearer_token; only the earlier-starting one should remain
-        assertTrue(kinds.size <= 1 || !kinds.containsAll(setOf("bearer_token", "jwt")))
+    @Test fun `overlapping spans merge into their union`() {
+        // "Bearer <jwt>": bearer_token covers the JWT; one span, the earlier label.
+        val text = "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+        assertEquals(listOf(text), covered(text))
+        assertEquals(listOf("bearer_token"), kinds(text))
     }
 
     @Test fun `keeps non-overlapping spans from different patterns`() {
-        val text = "alice@example.com sent 192.168.1.1"
-        val spans = detector.detect(text)
-        val kinds = spans.map { it.kind }.toSet()
-        assertTrue(kinds.contains("email"))
-        assertTrue(kinds.contains("ip_v4"))
+        assertEquals(listOf("email", "ip_v4"), kinds("alice@example.com sent 192.168.1.1"))
     }
 
-    @Test fun `identical overlapping spans are deduplicated`() {
-        // "password=secret123" — the password pattern captures secret123 (group 1).
-        // The generic_api_key pattern may also match the value part.
-        // At least one should remain; both shouldn't overlap indefinitely.
-        val spans = detector.detect("password=secret123")
-        // May match password and/or generic_api_key; neither should appear twice
-        val kinds = spans.groupingBy { it.kind }.eachCount()
-        kinds.values.forEach { count -> assertTrue(count <= 1, "$kinds had duplicates") }
-    }
-
-    @Test fun `three spans with partial overlap keep non-overlapping subset`() {
-        // Construct three overlapping patterns: bearer token + jwt overlapping
-        val text = "Bearer abcdefghijklmnopqrstuvwxyz012345 extra alice@example.com"
-        val spans = detector.detect(text)
-        // Email is far from bearer; both should survive
-        assertTrue(spans.size >= 2)
-        assertTrue(spans.any { it.kind == "email" })
-    }
-
-    // ── Code-point offset correctness ──
+    // ── code-point offsets ──
 
     @Test fun `offsets are code-point based with non-BMP prefix`() {
-        // 😀 (U+1F600) is 2 UTF-16 code units but 1 code point.
-        // "😀😀 alice@example.com" — email starts at code point 3, not UTF-16 index 5.
         val text = "😀😀 alice@example.com"
-        val spans = detector.detect(text)
-        assertEquals(1, spans.size)
-        val span = spans[0]
-        assertEquals("email", span.kind)
-        // Two emoji + one space = 3 code points before the email starts.
+        val span = detector.detect(text).single()
         assertEquals(3, span.start)
-        // Round-trip: extract via code-point offsets
-        val startIdx = text.offsetByCodePoints(0, span.start)
-        val endIdx = text.offsetByCodePoints(0, span.end)
-        assertEquals("alice@example.com", text.substring(startIdx, endIdx))
+        assertEquals("alice@example.com", covered(text).single())
     }
 
     @Test fun `offsets work correctly with ASCII-only text`() {
-        val spans = detector.detect("email alice@example.com for help")
-        assertEquals(1, spans.size)
-        assertEquals("email", spans[0].kind)
-        // "alice@example.com" starts at index 6 in "email alice@example.com for help"
-        assertEquals(6, spans[0].start)
+        assertEquals(6, detector.detect("email alice@example.com for help").single().start)
     }
 
-    // ── Boundaries ──
-
-    @Test fun `empty string produces empty spans`() {
-        val spans = detector.detect("")
-        assertEquals(0, spans.size)
-    }
-
-    @Test fun `text with no PII produces empty spans`() {
-        val spans = detector.detect("just some regular text without any secrets")
-        assertEquals(0, spans.size)
+    @Test fun `empty and clean texts produce no spans`() {
+        assertEquals(emptyList(), kinds(""))
+        assertEquals(emptyList(), kinds("just some regular text without any secrets"))
     }
 }

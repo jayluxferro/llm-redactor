@@ -249,3 +249,22 @@ def test_overlapping_spans_merge_to_their_union():
     a = Span(0, 5, "a", 1.0, t[0:5], "regex")
     b = Span(3, 12, "b", 0.5, t[3:12], "ner")
     assert [(m.start, m.end, m.text) for m in _merge_overlapping([a, b])] == [(0, 12, t[0:12])]
+
+
+def test_long_runs_stay_linear():
+    # email, gcp_service_account and hostname_internal once rescanned the
+    # rest of a run from every word boundary in it: 100 KB of "a.b.c..."
+    # took 8 s (about 50 s in the Burp port).  Their leading runs are now
+    # bounded by RFC limits (64-char local part, 63-char DNS label).
+    import time
+
+    for text in ("a." + "b." * 50_000 + "internal", "x-" * 100_000, "a." * 50_000 + "@x"):
+        start = time.perf_counter()
+        detect_regex(text)
+        assert time.perf_counter() - start < 3.0
+    # The bounds change nothing for real addresses and hosts.
+    long_local = "a" * 64 + "@example.com"
+    assert [s.text for s in detect_regex(long_local) if s.kind == "email"] == [long_local]
+    assert [
+        s.text for s in detect_regex("x" * 63 + ".corp.example") if s.kind == "hostname_internal"
+    ]

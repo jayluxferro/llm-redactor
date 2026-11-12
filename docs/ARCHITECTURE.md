@@ -206,38 +206,40 @@ worse than the one we're trying to prevent.
 ## Burp Suite extension (`burp-plugin/`)
 
 A Kotlin Option B implementation runs inside Burp's HTTP and WebSocket layers.
-It protects every category by default (`policy.categories: [all]`) and uses the
-local Python detector service as the authoritative detector:
+It uses the local Python detector service as the authoritative detector:
 
-1. The extension extracts outbound query values and supported request-body text.
-2. It sends ordered fragments to `POST /v1/redactor/detect-batch` on the local
-   service. That service runs regex, NER, and any enabled local-LLM validation.
-3. The Kotlin plugin replaces returned spans with typed placeholders. On service
-   failure it falls back to its local regex detector.
-4. The transformed HTTP request is re-encoded and forwarded. Responses, SSE events,
-   and all WebSocket frames are deliberately not restored or modified, except that
-   Burp's canonical local block response (`400 {"detail":"Bad Request"}`) is changed
-   to a local `204` acknowledgement. This preserves Burp's egress block while keeping
-   fire-and-forget clients from treating it as a transport failure. Stateful Codex
-   response streams are excluded so their actual stream event sequence is preserved. WebSocket
-   frames are logged as streaming-protocol pass-through events because a synchronous
-   detector call or byte-level rewrite can break stateful streaming clients.
+1. The extension decodes the outbound request (content encoding, then format) and
+   extracts the strings to check: query and form values, JSON string values (each
+   with its member name as context), multipart text parts, protobuf strings.
+2. It sends them in ordered batches to `POST /v1/redactor/detect-batch` on the
+   local service, which runs regex, NER, and any enabled local-LLM validation.
+3. It replaces the returned spans with typed placeholders, one namespace per
+   request, and rebuilds the body in its original format: JSON keeps its numbers
+   and structure, protobuf and gRPC framing get recomputed lengths. On service
+   failure it uses its built-in detector, a port of `detect/regex.py` and
+   `detect/wallets.py` held to the Python output by `tests/test_burp_parity.py`
+   and `ParityTest`.
+4. Only a request in which something was detected is re-encoded and rewritten.
 
-For `POST /backend-api/codex/responses`, the extension uses field-aware JSON handling:
-only explicit user-text keys (`content`, `input`, `instructions`, `message`, `prompt`,
-and `text`) are redacted. Protocol IDs, metadata, and other structured fields remain
-unchanged. Invalid or non-JSON bodies safely pass through.
+Responses and SSE events are not restored or modified, except that Burp's canonical
+local block response (exactly `400 {"detail":"Bad Request"}`) becomes a local `204`
+acknowledgement, which keeps fire-and-forget clients working while the block stays in
+force. Client-to-server WebSocket text frames are redacted with the built-in detector
+only, since a detector round trip can stall a streaming connection; binary and
+server-to-client frames pass through.
 
-Supported payload handling is UTF-8 text, JSON, XML, URL-encoded forms, multipart
-text payloads, generic protobuf length-delimited UTF-8 fields, and gzip/deflate/zstd
-content encodings. Brotli, all WebSocket frames, signed/authenticated requests,
-unreadable payloads, and JSON encrypted/ciphertext values safely pass through; the
-last category is preserved byte-for-byte because ciphertext integrity is protocol
-critical. A message containing an encrypted protocol envelope is passed through as
-a whole, since authentication can cover fields surrounding the ciphertext. The live
-Activity UI is bounded and shows only time, host, protocol,
-result, detection counts, and pass-through reason; it never stores request bytes,
-detected values, or reverse maps.
+OpenAI Responses API requests (`POST /v1/responses`, `POST /backend-api/codex/responses`)
+are protocol JSON: only user and tool text (`content`, `input`, `instructions`, `message`,
+`prompt`, `text`, `output`, `arguments`, `command`) is redacted; IDs, metadata, and
+encrypted reasoning items are left byte for byte. Invalid JSON passes through.
+
+Ciphertext (JSON members named like `encrypted_content` or `ciphertext`, Fernet
+tokens) is never modified, because one changed byte breaks its authentication. Outside
+the Responses API path, a request carrying such an envelope passes through whole, since
+authentication can cover the surrounding fields. Signed requests (SigV4, presigned
+URLs), Brotli, and unreadable payloads pass through too. The live Activity UI is
+bounded and shows only time, host, protocol, result, detection counts, and pass-through
+reason; it never stores request bytes, detected values, query strings, or reverse maps.
 
 When `pipeline.image_redaction.enabled` and `license_acknowledged` are true, raw
 JPEG/PNG bodies and base64 `data:image/...` attachments take a separate loopback-only
@@ -249,5 +251,5 @@ bundled; the Screenpipe reference model is CC BY-NC 4.0, so this adapter is inte
 for permitted non-commercial use. Missing models/runtimes return 503 and cause a
 safe pass-through with `image-redactor-unavailable` activity metadata.
 
-Build: `cd burp-plugin && gradle shadowJar` → `build/libs/burp-llm-redactor.jar`.
+Build: `cd burp-plugin && ./gradlew test shadowJar` → `build/libs/burp-llm-redactor.jar`.
 Details: [`burp-plugin/README.md`](../burp-plugin/README.md).

@@ -260,32 +260,37 @@ Agent                          llm-redactor                Cloud LLM
 ### 4. Burp Suite extension (proxy-layer redaction)
 
 For generic HTTP(S) traffic that already flows through Burp, load the Kotlin
-extension instead of (or in addition to) the Python HTTP proxy. It redacts all
-configured categories (default: `all`) from outbound request query values and
-bodies, and from client-to-server WebSocket text frames:
+extension instead of (or in addition to) the Python HTTP proxy. It redacts
+outbound request query values and bodies, and client-to-server WebSocket text
+frames:
 
 ```bash
 cd burp-plugin
-gradle shadowJar
+./gradlew test shadowJar
 # Install build/libs/burp-llm-redactor.jar in Burp → Extensions → Add
 ```
 
-Point your browser or client at Burp’s proxy listener. The extension calls the
-local `POST /v1/redactor/detect-batch` service first, which uses this project's
-regex, NER, and optional local-LLM validation. If that service is unavailable,
-the extension uses its local regex fallback. HTTP responses, SSE event streams,
-and server-to-client WebSocket frames pass through unchanged.
+Point your browser or client at Burp’s proxy listener. For HTTP requests the
+extension calls the local `POST /v1/redactor/detect-batch` service, which uses this
+project's regex, NER, and optional local-LLM validation under the service config's
+`policy.categories`. If that service is unavailable, and always for WebSocket frames,
+it uses its built-in detector: a Kotlin port of the regex and wallet detectors
+(every category, no NER), kept in step with the Python code by a parity test.
+HTTP responses, SSE event streams, and server-to-client WebSocket frames pass
+through unchanged; placeholders are not restored.
 
 | Topic | Detail |
 |--------|--------|
 | Full docs | [`burp-plugin/README.md`](burp-plugin/README.md) |
-| Build | `gradle test shadowJar` |
+| Build | `./gradlew test shadowJar` (JDK 17+) |
 | Detector backend | Start `uv run llm-redactor serve --port 7789`; the plugin uses `http://127.0.0.1:7789/v1/redactor/detect-batch` |
 
-Supported body formats include UTF-8 text, JSON, XML, URL-encoded forms, multipart
-text payloads, and schema-blind protobuf length-delimited UTF-8 fields. gzip,
-deflate, and zstd bodies are decoded and re-encoded. Brotli, unreadable payloads,
-signed requests, binary WebSocket frames, and JSON encrypted/ciphertext values pass through unchanged
+JSON is redacted value by value (numbers and structure are never altered), forms and
+query strings per decoded value, multipart per part, and protobuf/gRPC with every
+length recomputed; other UTF-8 text is redacted as text. gzip, deflate, and zstd
+bodies are decoded and re-encoded. OpenAI Responses API requests (including Codex's)
+have only their user and tool text redacted. Brotli, unreadable payloads, signed
+requests, binary WebSocket frames, and ciphertext values pass through unchanged
 and are shown in the plugin's live metadata-only activity table; no payload text
 or detected values are persisted.
 

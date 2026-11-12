@@ -19,7 +19,10 @@ from .types import Span
 
 PATTERNS: dict[str, re.Pattern[str]] = {
     # ── PII ──────────────────────────────────────────────────────────────
-    "email": re.compile(r"\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b"),
+    # Local part bounded at RFC 5321's 64 octets.  Unbounded, every word
+    # boundary in a long dotted run with no "@" rescanned the whole run:
+    # 100 KB of `a.b.c...` took 8 s here (and ~50 s in the Burp port).
+    "email": re.compile(r"\b[a-zA-Z0-9._%+\-]{1,64}@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b"),
     "phone_us": re.compile(r"(?<!\d)(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}(?!\d)"),
     "phone_intl": re.compile(
         r"\+\d{1,3}[-.\s]?\d{1,4}[-.\s]?\d{2,4}[-.\s]?\d{2,4}(?:[-.\s]?\d{1,4})?"
@@ -122,7 +125,10 @@ PATTERNS: dict[str, re.Pattern[str]] = {
         r"(?i)aws[_\-]?session[_\-]?token[\s]*[=:]\s*['\"]?([A-Za-z0-9/+=]{100,})['\"]?"
     ),
     # GCP
-    "gcp_service_account": re.compile(r"\b[a-z0-9\-]+@[a-z0-9\-]+\.iam\.gserviceaccount\.com\b"),
+    # Bounded for the same reason as email (account IDs are at most 30 chars).
+    "gcp_service_account": re.compile(
+        r"\b[a-z0-9\-]{1,64}@[a-z0-9\-]+\.iam\.gserviceaccount\.com\b"
+    ),
     "gcp_api_key": re.compile(r"\bAIza[0-9A-Za-z\-_]{35}\b"),
     # Azure
     "azure_storage_key": re.compile(
@@ -206,7 +212,7 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     # of the name in the clear ("cache-04.corp" redacted, ".globex.net" leaked).
     # "infra" and friends were missing from the label list entirely.
     "hostname_internal": re.compile(
-        r"\b[a-z][a-z0-9\-]*\."
+        r"\b[a-z][a-z0-9\-]{0,62}\."  # a DNS label is at most 63 chars; bounded like email
         r"(?:internal|local|corp|lan|intranet|private|staging|dev|infra|test|qa|k8s|cluster|svc)"
         r"(?:\.[a-z0-9\-]+)*\b"
     ),

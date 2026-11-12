@@ -2,6 +2,7 @@ package org.llmredactor.burp
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class ActivityLogTest {
@@ -44,10 +45,22 @@ class ActivityLogTest {
         }
         threads.forEach { it.start() }
         threads.forEach { it.join() }
-        // 10 threads × 50 = 500 entries; log is bounded at 500
+        // 10 threads × 50 = 500 entries and a cap of 500: none may be lost.
         val snapshot = log.snapshot()
-        assertTrue(snapshot.size <= 500)
-        assertTrue(snapshot.isNotEmpty())
+        assertEquals(500, snapshot.size)
+        assertEquals((1..10).map { "host-$it" }.toSet(), snapshot.map { it.host }.toSet())
+    }
+
+    @Test fun `request policy recognises signed and Responses API requests`() {
+        assertTrue(RedactionPolicy.isSignedRequest("/b/o?X-Amz-Signature=abc", null, false))
+        assertTrue(RedactionPolicy.isSignedRequest("/o?x=1&x-goog-signature=abc", null, false))
+        assertTrue(RedactionPolicy.isSignedRequest("/", "AWS4-HMAC-SHA256 Credential=AKIA/x", false))
+        assertTrue(RedactionPolicy.isSignedRequest("/", null, true))
+        assertFalse(RedactionPolicy.isSignedRequest("/v1/messages", "Bearer sk-x", false))
+        assertTrue(RedactionPolicy.isResponsesApiRequest("POST", "/v1/responses"))
+        assertTrue(RedactionPolicy.isResponsesApiRequest("post", "/backend-api/codex/responses/compact"))
+        assertFalse(RedactionPolicy.isResponsesApiRequest("GET", "/v1/responses"))
+        assertFalse(RedactionPolicy.isResponsesApiRequest("POST", "/v1/responses-extra"))
     }
 
     @Test fun `clear followed by add works correctly`() {

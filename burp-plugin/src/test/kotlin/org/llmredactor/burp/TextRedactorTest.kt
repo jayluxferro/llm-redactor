@@ -3,53 +3,57 @@ package org.llmredactor.burp
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class TextRedactorTest {
-    @Test fun `canonical Burp block response is acknowledged generically`() {
+    private fun offline() = TextRedactor(DetectorClient("http://127.0.0.1:1/nope"))
+
+    @Test fun `only the canonical Burp block response is acknowledged`() {
         assertTrue(blockedByBurp(400, "{\"detail\":\"Bad Request\"}"))
         assertTrue(blockedByBurp(400, "  {\"detail\":\"Bad Request\"}\n"))
-        assertTrue(blockedByBurp(400, "{\"detail\":\"not found\"}"))
-        assertTrue(blockedByBurp(403, "{\"detail\":\"Forbidden\"}"))
-        assertEquals(false, blockedByBurp(400, "{\"error\":\"bad request\"}"))
-        assertEquals(false, blockedByBurp(500, "{\"detail\":\"Bad Request\"}"))
-        assertEquals(false, blockedByBurp(400, "{\"detail\":\"Bad Request\",\"code\":400}"))
+        assertTrue(blockedByBurp(400, "{ \"detail\" : \"Bad Request\" }"))
+        assertTrue(blockedByBurp(400, "{\n\"detail\":\"Bad Request\"\n}"))
+        // Real upstream refusals in the same shape must reach the client as errors.
+        assertFalse(blockedByBurp(403, "{\"detail\":\"Forbidden\"}"))
+        assertFalse(blockedByBurp(403, "{\"detail\":\"Not authenticated\"}"))
+        assertFalse(blockedByBurp(400, "{\"detail\":\"not found\"}"))
+        assertFalse(blockedByBurp(400, "{\"detail\":\"\"}"))
+        assertFalse(blockedByBurp(400, "{\"error\":\"bad request\"}"))
+        assertFalse(blockedByBurp(500, "{\"detail\":\"Bad Request\"}"))
+        assertFalse(blockedByBurp(401, "{\"detail\":\"Bad Request\"}"))
+        assertFalse(blockedByBurp(400, "{\"detail\":\"Bad Request\",\"code\":400}"))
+    }
+
+    @Test fun `Responses API streams are never acknowledged`() {
+        for (path in listOf("/backend-api/codex/responses", "/backend-api/codex/responses/abc", "/v1/responses")) {
+            assertFalse(BlockedRequestCompatibility.isCanonicalBurpBlock(400, "{\"detail\":\"Bad Request\"}", "POST", path))
+        }
     }
 
     @Test fun `regex fallback redacts email and keeps typed placeholder`() {
-        val redactor = TextRedactor(DetectorClient("http://127.0.0.1:1/nope"))
-        val result = redactor.redact("email alice@example.com")
+        val result = offline().redact("email alice@example.com")
         assertTrue(result.usedFallback)
         assertEquals("email ⟨EMAIL_1⟩", result.text)
     }
 
     @Test fun `redactWithRegex skips detector entirely`() {
-        val redactor = TextRedactor(DetectorClient("http://127.0.0.1:1/nope"))
-        val result = redactor.redactWithRegex("email alice@example.com and phone 555-123-4567")
+        val result = offline().redactWithRegex("email alice@example.com and phone 555-123-4567")
         assertTrue(result.usedFallback)
-        assertTrue(result.text.contains("⟨EMAIL_1⟩"))
-        assertTrue(result.text.contains("⟨PHONE_1⟩"))
+        assertEquals("email ⟨EMAIL_1⟩ and phone ⟨PHONE_US_1⟩", result.text)
         assertEquals(2, result.spans.size)
     }
 
     @Test fun `query values are redacted`() {
-        val transformer = BodyTransformer(TextRedactor(DetectorClient("http://127.0.0.1:1/nope")))
+        val transformer = BodyTransformer(offline())
         val (path, detections) = transformer.transformQuery("/x?email=alice%40example.com")
-        assertTrue(path.contains("%E2%9F%A8EMAIL_1%E2%9F%A9"))
+        assertEquals("/x?email=%E2%9F%A8EMAIL_1%E2%9F%A9", path)
         assertEquals(1, detections)
     }
 
-    @Test fun `protobuf walker preserves message when no text fields exist`() {
-        val transformer = BodyTransformer(TextRedactor(DetectorClient("http://127.0.0.1:1/nope")))
-        val input = byteArrayOf(0x08, 0x96.toByte(), 0x01)
-        val result = transformer.transform(input, "application/protobuf", null)
-        assertTrue(result.body.contentEquals(input))
-    }
-
     @Test fun `encrypted JSON values are never redacted`() {
-        val redactor = TextRedactor(DetectorClient("http://127.0.0.1:1/nope"))
         val encrypted = "gAAAAAB-example-alice@example.com-Lb0="
-        val result = redactor.redact("""{"encrypted_content":"$encrypted","email":"bob@example.com"}""")
+        val result = offline().redact("""{"encrypted_content":"$encrypted","email":"bob@example.com"}""")
 
         assertTrue(result.usedFallback)
         assertTrue(result.text.contains("\"encrypted_content\":\"$encrypted\""))
@@ -57,21 +61,36 @@ class TextRedactorTest {
     }
 
     @Test fun `Fernet ciphertext is preserved outside known JSON fields`() {
-        val redactor = TextRedactor(DetectorClient("http://127.0.0.1:1/nope"))
         val ciphertext = "gAAAAABl9xF5uS1foJ2dK9lM4T3Q8W7Y6X5Z4C3V2B1N0M9L8K7J6H5G4F3E2D1C0="
-        val result = redactor.redact("token=$ciphertext email=alice@example.com")
+        val result = offline().redact("token=$ciphertext email=alice@example.com")
 
         assertTrue(result.usedFallback)
         assertTrue(result.text.contains(ciphertext))
         assertTrue(result.text.contains("email=⟨EMAIL_1⟩"))
     }
 
+    @Test fun `a span straddling ciphertext is cut around it, not dropped`() {
+        // Dropping the whole span (the old behaviour) left the part outside
+        // the ciphertext, e.g. a name an NER span also covered, in the clear.
+        val spans = listOf(Span(0, 30, "person")).minusRanges(listOf(CodePointRange(10, 20)))
+        assertEquals(listOf(Span(0, 10, "person"), Span(20, 30, "person")), spans)
+        val ciphertext = "gAAAAABl9xF5uS1foJ2dK9lM4T3Q8W7Y6X5Z4C3V2B1N0M9L8K7J6H5G4F3E2D1C0="
+        assertEquals("⟨EMAIL_1⟩ $ciphertext", offline().redact("alice@example.com $ciphertext").text)
+    }
+
     @Test fun `encrypted protocol payload is identified for complete pass through`() {
         val payload = """{"encrypted_content":"gAAAAABl9xF5uS1foJ2dK9lM4T3Q8W7Y6X5Z4C3V2B1N0M9L8K7J6H5G4F3E2D1C0="}"""
-        val transformer = BodyTransformer(TextRedactor(DetectorClient("http://127.0.0.1:1/nope")))
+        val transformer = BodyTransformer(offline())
 
         assertTrue(TextRedactor.isOpaqueProtocolPayload(payload))
         assertTrue(transformer.isOpaqueProtocolPayload(payload.encodeToByteArray()))
+    }
+
+    @Test fun `ordinary words that merely start like Fernet are not opaque`() {
+        // The old marker inherited (?i) from the key pattern: any long word
+        // starting "gaaaa" sent the whole request through unredacted.
+        assertFalse(TextRedactor.isOpaqueProtocolPayload("Gaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaal!"))
+        assertFalse(TextRedactor.isOpaqueProtocolPayload("gAAAAA-too-short"))
     }
 
     @Test fun `JPEG and PNG bodies use the local image redactor`() {
@@ -81,10 +100,7 @@ class TextRedactorTest {
             assertContentEquals(png, body)
             RedactedImage(byteArrayOf(9, 8), detections = 2)
         }
-        val transformer = BodyTransformer(
-            TextRedactor(DetectorClient("http://127.0.0.1:1/nope")),
-            imageRedactor,
-        )
+        val transformer = BodyTransformer(offline(), imageRedactor)
 
         val result = transformer.transform(png, "image/png", null)
         assertContentEquals(byteArrayOf(9, 8), result.body)
@@ -100,27 +116,21 @@ class TextRedactorTest {
             assertContentEquals(png, body)
             RedactedImage(byteArrayOf(4, 5), detections = 1)
         }
-        val transformer = BodyTransformer(
-            TextRedactor(DetectorClient("http://127.0.0.1:1/nope")),
-            imageRedactor,
-        )
+        val transformer = BodyTransformer(offline(), imageRedactor)
         val result = transformer.transform(
             """{"image_url":"data:image/png;base64,$encodedPng"}""".encodeToByteArray(),
             "application/json",
             null,
         )
 
-        assertEquals(
-            """{"image_url":"data:image/png;base64,BAU="}""",
-            result.body.decodeToString(),
-        )
+        assertEquals("""{"image_url":"data:image/png;base64,BAU="}""", result.body.decodeToString())
         assertEquals(1, result.detections)
     }
 
     @Test fun `invalid bytes labelled as an image are passed through`() {
         var called = false
         val transformer = BodyTransformer(
-            TextRedactor(DetectorClient("http://127.0.0.1:1/nope")),
+            offline(),
             ImageRedactor { _, _ ->
                 called = true
                 RedactedImage(byteArrayOf(), detections = 0)
@@ -135,141 +145,123 @@ class TextRedactorTest {
         assertEquals(false, called)
     }
 
-    // ── Additional redact() tests ──
+    // ── redact() ──
 
     @Test fun `empty string returns empty outcome`() {
-        val redactor = TextRedactor(DetectorClient("http://127.0.0.1:1/nope"))
-        val result = redactor.redact("")
+        val result = offline().redact("")
         assertEquals("", result.text)
         assertEquals(0, result.spans.size)
         assertEquals(false, result.usedFallback)
     }
 
     @Test fun `text with no PII returns unchanged`() {
-        val redactor = TextRedactor(DetectorClient("http://127.0.0.1:1/nope"))
-        val result = redactor.redact("just some regular text without any secrets")
+        val result = offline().redact("just some regular text without any secrets")
         assertEquals("just some regular text without any secrets", result.text)
         assertEquals(0, result.spans.size)
     }
 
-    @Test fun `multiple PII of same kind get sequential counters`() {
-        val redactor = TextRedactor(DetectorClient("http://127.0.0.1:1/nope"))
-        val result = redactor.redact("alice@example.com and bob@example.com")
-        assertTrue(result.usedFallback)
-        assertTrue(result.text.contains("⟨EMAIL_1⟩"))
-        assertTrue(result.text.contains("⟨EMAIL_2⟩"))
+    @Test fun `different values of one kind get different placeholders, left to right`() {
+        val result = offline().redact("alice@example.com and bob@example.com")
+        assertEquals("⟨EMAIL_1⟩ and ⟨EMAIL_2⟩", result.text)
         assertEquals(2, result.spans.size)
     }
 
     @Test fun `same PII text appearing twice reuses same placeholder`() {
-        val redactor = TextRedactor(DetectorClient("http://127.0.0.1:1/nope"))
-        val result = redactor.redact("user alice@example.com copied alice@example.com")
-        assertTrue(result.usedFallback)
-        val occurrences = "⟨EMAIL_1⟩".toRegex().findAll(result.text).count()
-        assertEquals(2, occurrences)
+        val result = offline().redact("user alice@example.com copied alice@example.com")
+        assertEquals("user ⟨EMAIL_1⟩ copied ⟨EMAIL_1⟩", result.text)
         assertEquals(2, result.spans.size)
     }
 
-    @Test fun `non-ASCII prefix with ASCII email has correct offsets`() {
-        // 名前 is 2 BMP code points; offset for email after prefix is correct
-        val redactor = TextRedactor(DetectorClient("http://127.0.0.1:1/nope"))
-        val result = redactor.redact("名前 alice@example.com")
-        assertTrue(result.usedFallback)
-        assertTrue(result.text.contains("⟨EMAIL_1⟩"))
-        assertEquals(1, result.spans.size)
+    @Test fun `non-BMP prefix keeps offsets right`() {
+        val result = offline().redact("😀😀 alice@example.com 😀")
+        assertEquals("😀😀 ⟨EMAIL_1⟩ 😀", result.text)
     }
 
-    // ── redactBatch() tests ──
+    @Test fun `key context lets key-anchored patterns fire on a bare value`() {
+        val redactor = offline()
+        val field = TextRedactor.Field("hunter22hunter", prefix = "\"password\": \"", suffix = "\"")
+        val result = redactor.redactFields(listOf(field), PlaceholderNaming()).single()
+        assertEquals("⟨PASSWORD_1⟩", result.text)
+        // The context is never part of the output, and an innocuous key changes nothing.
+        val note = TextRedactor.Field("plain words", prefix = "\"note\": \"", suffix = "\"")
+        assertEquals("plain words", redactor.redactFields(listOf(note), PlaceholderNaming()).single().text)
+    }
 
-    @Test fun `batch redacts multiple texts with fallback`() {
-        val redactor = TextRedactor(DetectorClient("http://127.0.0.1:1/nope"))
-        val results = redactor.redactBatch(listOf("alice@example.com", "bob@example.com"))
-        assertEquals(2, results.size)
-        assertTrue(results[0].usedFallback)
-        assertTrue(results[1].usedFallback)
-        assertTrue(results[0].text.contains("⟨EMAIL_1⟩"))
-        assertTrue(results[1].text.contains("⟨EMAIL_1⟩"))
+    // ── redactBatch() ──
+
+    @Test fun `batch shares one placeholder namespace`() {
+        val results = offline().redactBatch(listOf("alice@example.com", "bob@example.com", "alice@example.com"))
+        assertEquals(listOf("⟨EMAIL_1⟩", "⟨EMAIL_2⟩", "⟨EMAIL_1⟩"), results.map { it.text })
+        assertTrue(results.all { it.usedFallback })
     }
 
     @Test fun `batch with mix of PII and clean texts`() {
-        val redactor = TextRedactor(DetectorClient("http://127.0.0.1:1/nope"))
-        val results = redactor.redactBatch(listOf("alice@example.com", "no pii here"))
-        assertEquals(2, results.size)
+        val results = offline().redactBatch(listOf("alice@example.com", "no pii here"))
         assertEquals(1, results[0].spans.size)
         assertEquals(0, results[1].spans.size)
     }
 
     @Test fun `empty batch returns empty list`() {
-        val redactor = TextRedactor(DetectorClient("http://127.0.0.1:1/nope"))
-        val results = redactor.redactBatch(emptyList())
-        assertEquals(0, results.size)
+        assertEquals(0, offline().redactBatch(emptyList()).size)
     }
 
-    @Test fun `batch all empty strings`() {
-        val redactor = TextRedactor(DetectorClient("http://127.0.0.1:1/nope"))
-        val results = redactor.redactBatch(listOf("", ""))
-        assertEquals(2, results.size)
-        results.forEach {
-            assertEquals("", it.text)
-            assertEquals(0, it.spans.size)
-            // Detector fails → fallback path sets usedFallback=true
-            assertTrue(it.usedFallback)
-        }
+    @Test fun `all-empty batch needs no detector at all`() {
+        val results = offline().redactBatch(listOf("", ""))
+        assertEquals(listOf("", ""), results.map { it.text })
+        assertTrue(results.none { it.usedFallback })
     }
 
-    // ── redactWithRegex() tests ──
+    // ── redactWithRegex() ──
 
     @Test fun `redactWithRegex always sets usedFallback true`() {
-        val redactor = TextRedactor(DetectorClient("http://127.0.0.1:1/nope"))
-        val result = redactor.redactWithRegex("no pii here")
-        assertTrue(result.usedFallback)
+        assertTrue(offline().redactWithRegex("no pii here").usedFallback)
     }
 
     @Test fun `redactWithRegex produces same output as failed redact`() {
-        val redactor = TextRedactor(DetectorClient("http://127.0.0.1:1/nope"))
+        val redactor = offline()
         val viaRedact = redactor.redact("email alice@example.com")
         val viaRegex = redactor.redactWithRegex("email alice@example.com")
         assertEquals(viaRedact.text, viaRegex.text)
         assertEquals(viaRedact.spans.size, viaRegex.spans.size)
     }
 
-    // ── Opaque protection edge cases ──
+    // ── opaque protection ──
 
     @Test fun `data URI in JSON is protected from redaction`() {
-        val redactor = TextRedactor(DetectorClient("http://127.0.0.1:1/nope"))
         val dataUri = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
-        val result = redactor.redact("""{"image":"$dataUri"}""")
-        // The data URI should be preserved (not treated as PII to redact at text level)
-        assertTrue(result.text.contains("data:image/png;base64,"))
+        val result = offline().redact("""{"image":"$dataUri"}""")
+        assertTrue(result.text.contains(dataUri))
     }
 
     @Test fun `encrypted field with no surrounding PII produces zero spans`() {
-        val redactor = TextRedactor(DetectorClient("http://127.0.0.1:1/nope"))
-        val result = redactor.redact("""{"encrypted_content":"gAAAAAB-example-ciphertext-Lb0="}""")
-        assertEquals(0, result.spans.size)
+        assertEquals(0, offline().redact("""{"encrypted_content":"gAAAAAB-example-ciphertext-Lb0="}""").spans.size)
     }
 
     @Test fun `multiple opaque fields with interstitial PII`() {
-        val redactor = TextRedactor(DetectorClient("http://127.0.0.1:1/nope"))
-        val result = redactor.redact(
-            """{"encrypted_content":"gAAAAAB-a","email":"alice@example.com","cipher_text":"gAAAAAB-b"}""",
+        val result = offline().redact(
+            """{"encrypted_content":"gAAAAAB-a","email":"alice@example.com","ciphertext":"alice@example.org"}""",
         )
         assertEquals(1, result.spans.size)
         assertEquals("email", result.spans[0].kind)
         assertTrue(result.text.contains("⟨EMAIL_1⟩"))
-        // Encrypted values preserved
         assertTrue(result.text.contains("gAAAAAB-a"))
-        assertTrue(result.text.contains("gAAAAAB-b"))
+        assertTrue(result.text.contains("\"ciphertext\":\"alice@example.org\""))
     }
 
-    // ── isOpaqueProtocolPayload tests ──
+    @Test fun `escaped quotes inside an encrypted value do not end it early`() {
+        val result = offline().redact("""{"encrypted_content":"a\"bob@example.com\"b","x":"carol@example.com"}""")
+        assertTrue(result.text.contains("""a\"bob@example.com\"b"""))
+        assertTrue(result.text.contains("\"x\":\"⟨EMAIL_1⟩\""))
+    }
+
+    // ── isOpaqueProtocolPayload ──
 
     @Test fun `encrypted JSON key with colon is opaque`() {
-        // Suffixes must match: encrypted→content|payload|data, cipher→text|content|payload|data, sealed→content|payload|data
         assertTrue(TextRedactor.isOpaqueProtocolPayload("""{"encrypted_content":"..."}"""))
         assertTrue(TextRedactor.isOpaqueProtocolPayload("""{"ciphertext":"..."}"""))
         assertTrue(TextRedactor.isOpaqueProtocolPayload("""{"sealed_payload":"..."}"""))
         assertTrue(TextRedactor.isOpaqueProtocolPayload("""{"encrypted":"..."}"""))
+        assertTrue(TextRedactor.isOpaqueProtocolPayload("""{"encrypted_data": {"iv": "x"}}"""))
     }
 
     @Test fun `plain JSON with email is not opaque`() {
@@ -283,46 +275,6 @@ class TextRedactorTest {
 
     @Test fun `empty string is not opaque`() {
         assertEquals(false, TextRedactor.isOpaqueProtocolPayload(""))
-    }
-
-    // ── BlockedRequestCompatibility additional tests ──
-
-    @Test fun `block detection matches empty detail message`() {
-        assertTrue(blockedByBurp(400, "{\"detail\":\"\"}"))
-    }
-
-    @Test fun `block detection matches with whitespace around colons`() {
-        assertTrue(blockedByBurp(400, "{ \"detail\" : \"msg\" }"))
-    }
-
-    @Test fun `block detection rejects status 401`() {
-        assertEquals(false, blockedByBurp(401, "{\"detail\":\"Unauthorized\"}"))
-    }
-
-    @Test fun `block detection matches multiline JSON body with newlines`() {
-        // \s includes \n, so multi-line JSON bodies also match.
-        assertTrue(blockedByBurp(400, "{\n\"detail\":\"Bad Request\"\n}"))
-    }
-
-    @Test fun `Codex response streams are never acknowledged`() {
-        assertEquals(
-            false,
-            BlockedRequestCompatibility.isCanonicalBurpBlock(
-                400,
-                "{\"detail\":\"Bad Request\"}",
-                "POST",
-                "/backend-api/codex/responses",
-            ),
-        )
-        assertEquals(
-            false,
-            BlockedRequestCompatibility.isCanonicalBurpBlock(
-                403,
-                "{\"detail\":\"Forbidden\"}",
-                "POST",
-                "/backend-api/codex/responses/abc",
-            ),
-        )
     }
 
     private fun blockedByBurp(status: Short, body: String): Boolean =

@@ -2,12 +2,12 @@ package org.llmredactor.burp
 
 import burp.api.montoya.BurpExtension
 import burp.api.montoya.MontoyaApi
-import burp.api.montoya.core.ByteArray
 import burp.api.montoya.http.handler.HttpHandler
 import burp.api.montoya.http.handler.HttpRequestToBeSent
 import burp.api.montoya.http.handler.HttpResponseReceived
 import burp.api.montoya.http.handler.RequestToBeSentAction
 import burp.api.montoya.http.handler.ResponseReceivedAction
+import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.websocket.BinaryMessage
 import burp.api.montoya.websocket.BinaryMessageAction
 import burp.api.montoya.websocket.Direction
@@ -21,6 +21,7 @@ import java.awt.FlowLayout
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.JButton
 import javax.swing.JLabel
 import javax.swing.JPanel
@@ -28,53 +29,107 @@ import javax.swing.JScrollPane
 import javax.swing.JTable
 import javax.swing.Timer
 import javax.swing.table.AbstractTableModel
+import burp.api.montoya.core.ByteArray as BurpBytes
 
 class BurpLlmRedactor : BurpExtension {
     override fun initialize(api: MontoyaApi) {
         api.extension().setName("LLM Redactor")
         val activity = ActivityLog()
-        val redactor = TextRedactor()
-        val transformer = BodyTransformer(redactor)
+        // One HTTP client for text detection and image redaction.
+        val detector = DetectorClient()
+        val transformer = BodyTransformer(TextRedactor(detector), LocalImageRedactor(detector))
         api.http().registerHttpHandler(RequestRedactionHandler(transformer, activity))
-        api.websockets().registerWebSocketCreatedHandler(WebSocketRedactionHandler(activity, redactor))
+        api.websockets().registerWebSocketCreatedHandler(WebSocketRedactionHandler(activity, transformer))
         api.userInterface().registerSuiteTab("LLM Redactor", ActivityPanel(activity))
         api.logging().logToOutput(
-            "LLM Redactor loaded: all detector categories are enabled for HTTP requests; " +
-                "WebSocket client-to-server text frames are redacted with regex fallback. " +
-                "Responses and WebSocket binary frames are not modified.",
+            "LLM Redactor loaded: HTTP request queries and bodies are redacted through the local " +
+                "detector service (built-in detector when it is down); client-to-server WebSocket text " +
+                "frames always use the built-in detector. Responses and binary WebSocket frames are not modified.",
         )
     }
 }
 
+/** Which requests are touched, and how. Pure functions, so they are unit-tested. */
+internal object RedactionPolicy {
+    // OpenAI Responses API endpoints (Codex's ChatGPT backend, the public API, Azure).
+    private val RESPONSES_PATHS = listOf(
+        "/backend-api/codex/responses",
+        "/v1/responses",
+        "/openai/v1/responses",
+        "/openai/responses",
+    )
+    private val SIGNED_QUERY = Regex("(?i)[?&]X-(?:Amz|Goog)-Signature=")
+
+    fun isResponsesApiPath(path: String): Boolean = RESPONSES_PATHS.any { path == it || path.startsWith("$it/") }
+
+    fun isResponsesApiRequest(method: String, path: String): Boolean =
+        method.equals("POST", ignoreCase = true) && isResponsesApiPath(path)
+
+    /**
+     * A signature covers the bytes we would rewrite, so the request goes out
+     * as is (and is logged). SigV4 puts it in the Authorization header far
+     * more often than in X-Amz-Content-Sha256, which was the only signal
+     * checked before.
+     */
+    fun isSignedRequest(path: String, authorization: String?, hasAmzContentSha256: Boolean): Boolean =
+        hasAmzContentSha256 ||
+            authorization?.trimStart()?.startsWith("AWS4-HMAC-SHA256", ignoreCase = true) == true ||
+            SIGNED_QUERY.containsMatchIn(path)
+}
+
 private class WebSocketRedactionHandler(
     private val activity: ActivityLog,
-    private val redactor: TextRedactor,
+    private val transformer: BodyTransformer,
 ) : WebSocketCreatedHandler {
     override fun handleWebSocketCreated(created: WebSocketCreated) {
-        val host = created.upgradeRequest().httpService().host()
+        val upgrade = created.upgradeRequest()
+        val host = upgrade.httpService().host()
+        if (DetectorClient.isLoopbackHost(host)) return
+        val responsesApi = RedactionPolicy.isResponsesApiPath(upgrade.pathWithoutQuery())
+        // One namespace per connection: frames of one conversation must not
+        // reuse ⟨EMAIL_1⟩ for two different people.
+        val naming = PlaceholderNaming()
+        val binaryLogged = AtomicBoolean(false)
         created.webSocket().registerMessageHandler(object : MessageHandler {
             override fun handleTextMessage(message: TextMessage): TextMessageAction {
                 if (message.direction() != Direction.CLIENT_TO_SERVER) return TextMessageAction.continueWith(message)
                 return try {
-                    // Use regex-only redaction for WebSocket frames: the local
-                    // detector's HTTP round-trip can stall a streaming connection
-                    // when the service is unavailable, causing clients such as
-                    // Codex to close the stream.
-                    val outcome = redactor.redactWithRegex(message.payload())
-                    if (outcome.spans.isEmpty()) {
-                        TextMessageAction.continueWith(message)
-                    } else {
-                        activity.add(Activity("WebSocket", host, "redacted", outcome.spans.size))
-                        TextMessageAction.continueWith(outcome.text)
-                    }
+                    redact(message)
                 } catch (_: Exception) {
-                    activity.add(Activity("WebSocket", host, "passed-through", detail = "redaction-error"))
-                    TextMessageAction.continueWith(message)
+                    failed(message)
+                } catch (_: StackOverflowError) {
+                    failed(message)
                 }
             }
 
+            // Built-in detector only: even a loopback round trip can stall a
+            // streaming connection until clients such as Codex give up on it.
+            private fun redact(message: TextMessage): TextMessageAction {
+                val payload = message.payload()
+                val result = when {
+                    responsesApi -> transformer.transformResponsesText(payload, naming, regexOnly = true)
+                        ?: transformer.transformText(payload, null, naming, regexOnly = true)
+                    TextRedactor.isOpaqueProtocolPayload(payload) -> {
+                        activity.add(Activity("WebSocket", host, "passed-through", detail = "encrypted-protocol-payload"))
+                        return TextMessageAction.continueWith(message)
+                    }
+                    else -> transformer.transformText(payload, null, naming, regexOnly = true)
+                }
+                if (result.detections == 0) return TextMessageAction.continueWith(message)
+                activity.add(Activity("WebSocket", host, "redacted-built-in-detector", result.detections))
+                return TextMessageAction.continueWith(result.text)
+            }
+
+            private fun failed(message: TextMessage): TextMessageAction {
+                activity.add(Activity("WebSocket", host, "passed-through", detail = "redaction-error"))
+                return TextMessageAction.continueWith(message)
+            }
+
             override fun handleBinaryMessage(message: BinaryMessage): BinaryMessageAction {
-                activity.add(Activity("WebSocket", host, "passed-through", detail = "binary-frame"))
+                // Logged once per connection, not once per frame.
+                if (message.direction() == Direction.CLIENT_TO_SERVER && binaryLogged.compareAndSet(false, true)) {
+                    activity.add(Activity("WebSocket", host, "passed-through", detail = "binary-frames"))
+                }
                 return BinaryMessageAction.continueWith(message)
             }
         })
@@ -87,59 +142,79 @@ private class RequestRedactionHandler(
 ) : HttpHandler {
     override fun handleHttpRequestToBeSent(request: HttpRequestToBeSent): RequestToBeSentAction {
         val host = request.httpService().host()
-        if (host == "127.0.0.1" || host == "localhost") return RequestToBeSentAction.continueWith(request)
-        if (request.hasHeader("X-Amz-Content-Sha256") || request.path().contains("X-Amz-Signature=")) {
+        if (DetectorClient.isLoopbackHost(host)) return RequestToBeSentAction.continueWith(request)
+        val signed = RedactionPolicy.isSignedRequest(
+            request.path(),
+            request.headerValue("Authorization"),
+            request.hasHeader("X-Amz-Content-Sha256"),
+        )
+        if (signed) {
             activity.add(Activity("HTTP", host, "passed-through", detail = "signed-request"))
             return RequestToBeSentAction.continueWith(request)
         }
-        if (transformer.isOpaqueProtocolPayload(request.body().getBytes())) {
-            activity.add(Activity("HTTP", host, "passed-through", detail = "encrypted-protocol-payload"))
-            return RequestToBeSentAction.continueWith(request)
-        }
         return try {
-            val (path, queryCount) = transformer.transformQuery(request.path())
-            val result = if (isCodexResponsesRequest(request)) {
-                transformer.transformCodexResponseRequest(
-                    request.body().getBytes(),
-                    request.headerValue("Content-Type"),
-                    request.headerValue("Content-Encoding"),
-                )
-            } else {
-                transformer.transform(
-                    request.body().getBytes(),
-                    request.headerValue("Content-Type"),
-                    request.headerValue("Content-Encoding"),
-                )
-            }
-            if (result.reason != null) {
-                // Preserve query-parameter redactions even when the body cannot
-                // be transformed (e.g. unsupported encoding).  Discarding the
-                // modified path would leak PII that transformQuery already caught.
-                val forwarded = if (queryCount > 0) request.withPath(path) else request
-                activity.add(Activity("HTTP", host, "passed-through", detail = result.reason))
-                RequestToBeSentAction.continueWith(forwarded)
-            } else {
-                val updated = request.withPath(path).withBody(ByteArray.byteArray(*result.body))
-                val outcome = if (result.usedFallback) "redacted-regex-fallback" else "redacted-local-detector"
-                activity.add(Activity("HTTP", host, outcome, result.detections + queryCount))
-                RequestToBeSentAction.continueWith(updated)
-            }
+            redact(request, host)
         } catch (_: Exception) {
+            activity.add(Activity("HTTP", host, "passed-through", detail = "transform-error"))
+            RequestToBeSentAction.continueWith(request)
+        } catch (_: StackOverflowError) {
+            // A regex on hostile input; never let it escape into Burp's handler thread.
             activity.add(Activity("HTTP", host, "passed-through", detail = "transform-error"))
             RequestToBeSentAction.continueWith(request)
         }
     }
 
-    private fun isCodexResponsesRequest(request: HttpRequestToBeSent): Boolean =
-        request.method().equals("POST", ignoreCase = true) &&
-            (request.pathWithoutQuery() == CODEX_RESPONSES_PATH ||
-                request.pathWithoutQuery().startsWith("$CODEX_RESPONSES_PATH/"))
+    private fun redact(request: HttpRequestToBeSent, host: String): RequestToBeSentAction {
+        // One namespace for the query and every body field of this request.
+        val naming = PlaceholderNaming()
+        val query = transformer.transformQuery(request.path(), naming)
+        val body = request.body().getBytes()
+        val contentType = request.headerValue("Content-Type")
+        val contentEncoding = request.headerValue("Content-Encoding")
+        val result = when {
+            body.isEmpty() -> BodyTransform(body, 0, false)
+            // Before the opaque check: this path never touches encrypted items,
+            // and Codex replays them in nearly every request after the first.
+            RedactionPolicy.isResponsesApiRequest(request.method(), request.pathWithoutQuery()) ->
+                transformer.transformResponsesRequest(body, contentType, contentEncoding, naming)
+            transformer.isOpaqueProtocolPayload(body, contentEncoding) ->
+                BodyTransform(body, 0, false, "encrypted-protocol-payload")
+            else -> transformer.transform(body, contentType, contentEncoding, naming)
+        }
+        val bodyDetections = if (result.reason == null) result.detections else 0
+        var updated: HttpRequest = request
+        if (query.detections > 0) updated = updated.withPath(query.path)
+        if (bodyDetections > 0) updated = updated.withBody(BurpBytes.byteArray(*result.body))
+        val detections = query.detections + bodyDetections
+        when {
+            result.reason != null -> activity.add(
+                Activity(
+                    "HTTP",
+                    host,
+                    if (query.detections > 0) "query-redacted-body-passed-through" else "passed-through",
+                    query.detections,
+                    result.reason,
+                ),
+            )
+            detections > 0 -> activity.add(
+                Activity(
+                    "HTTP",
+                    host,
+                    if (query.usedFallback || result.usedFallback) "redacted-regex-fallback" else "redacted-local-detector",
+                    detections,
+                ),
+            )
+        }
+        return RequestToBeSentAction.continueWith(updated)
+    }
 
     override fun handleHttpResponseReceived(response: HttpResponseReceived): ResponseReceivedAction {
         val request = response.initiatingRequest()
-        if (
+        val status = response.statusCode()
+        // Status and size first: no other response is ever copied into a String here.
+        if (status == 400.toShort() && response.body().length() <= 64 &&
             BlockedRequestCompatibility.isCanonicalBurpBlock(
-                response.statusCode(),
+                status,
                 response.bodyToString(),
                 request.method(),
                 request.pathWithoutQuery(),
@@ -157,20 +232,19 @@ private class RequestRedactionHandler(
                 ),
             )
             return ResponseReceivedAction.continueWith(
-                response.withStatusCode(204).withReasonPhrase("No Content")
-                    .withBody(ByteArray.byteArray(*kotlin.byteArrayOf())),
+                response.withStatusCode(204).withReasonPhrase("No Content").withBody(BurpBytes.byteArray(*byteArrayOf())),
             )
         }
 
-        // Store only routing metadata for failed responses. This makes an upstream
-        // 4xx/5xx diagnosable without retaining prompts, headers, or response bodies.
-        if (response.statusCode() >= 400) {
+        // Routing metadata only, and never the query string: presigned URLs
+        // carry their signature there, and the log is shown on screen.
+        if (status >= 400) {
             activity.add(
                 Activity(
                     "HTTP",
                     request.httpService().host(),
-                    "response-${response.statusCode()}",
-                    detail = "${request.method()} ${request.path()}",
+                    "response-$status",
+                    detail = "${request.method()} ${request.pathWithoutQuery()}",
                 ),
             )
         }
@@ -178,25 +252,21 @@ private class RequestRedactionHandler(
     }
 }
 
-private const val CODEX_RESPONSES_PATH = "/backend-api/codex/responses"
-
-/** Acknowledge Burp's canonical local block response; it never permits egress.
- *  Different Burp extensions return different ``detail`` messages ("Bad Request",
- *  "Not Found", etc.).  Match any single-field ``{"detail":"..."}`` at 400/403 so
- *  the coding agent sees a clean 204 instead of a transport error. Stateful Codex
- *  response streams are excluded: they require the actual response event sequence. */
+/**
+ * Acknowledge Burp's canonical local block response, `400 {"detail":"Bad Request"}`,
+ * with a 204; it never permits egress. Only that exact response qualifies:
+ * matching any one-field `{"detail": ...}` at 400 or 403 turned real upstream
+ * refusals (FastAPI-style `403 {"detail":"Not authenticated"}`) into silent
+ * successes. Responses API streams are excluded: they need the real event
+ * sequence.
+ */
 internal object BlockedRequestCompatibility {
-    private val burpBlockPattern = Regex("""^\s*\{\s*"detail"\s*:\s*"[^"]*"\s*\}\s*$""")
-    private const val codexResponsesPath = "/backend-api/codex/responses"
+    private val canonicalBlock = Regex("""^\s*\{\s*"detail"\s*:\s*"Bad Request"\s*\}\s*$""")
 
     fun isCanonicalBurpBlock(statusCode: Short, body: String, method: String, path: String): Boolean =
-        !isCodexResponseStream(method, path) &&
-            statusCode in setOf(400.toShort(), 403.toShort()) &&
-            burpBlockPattern.matches(body)
-
-    private fun isCodexResponseStream(method: String, path: String): Boolean =
-        method.equals("POST", ignoreCase = true) &&
-            (path == codexResponsesPath || path.startsWith("$codexResponsesPath/"))
+        statusCode == 400.toShort() &&
+            !RedactionPolicy.isResponsesApiRequest(method, path) &&
+            canonicalBlock.matches(body)
 }
 
 private class ActivityPanel(private val activity: ActivityLog) : JPanel(BorderLayout()) {
@@ -206,12 +276,14 @@ private class ActivityPanel(private val activity: ActivityLog) : JPanel(BorderLa
     init {
         val header = JPanel(FlowLayout(FlowLayout.LEFT, 8, 4))
         header.add(JLabel("Live activity — payloads and detected values are never stored."))
-        header.add(JButton("Clear").apply {
-            addActionListener {
-                activity.clear()
-                activityTableModel.replace(emptyList<Activity>())
-            }
-        })
+        header.add(
+            JButton("Clear").apply {
+                addActionListener {
+                    activity.clear()
+                    activityTableModel.replace(emptyList<Activity>())
+                }
+            },
+        )
         add(header, BorderLayout.NORTH)
 
         val table = JTable(activityTableModel).apply {
