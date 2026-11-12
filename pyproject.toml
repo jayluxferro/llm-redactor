@@ -80,6 +80,9 @@ mypy_path = ["src", "."]
 packages = ["llm_redactor", "evals"]
 explicit_package_bases = true
 warn_unused_ignores = true
+# Comparing incompatible types is always False: this is what let evals/runner.py
+# compare classify()'s (label, raw) tuple to "TRIVIAL" for months.
+strict_equality = true
 
 [[tool.mypy.overrides]]
 module = ["onnxruntime", "PIL", "PIL.*"]

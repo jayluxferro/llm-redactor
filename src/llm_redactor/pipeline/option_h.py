@@ -13,7 +13,7 @@ from typing import Any
 from ..config import Config
 from ..detect.orchestrator import detect_all
 from ..detect.types import Span, filter_by_categories
-from ..noise.dp import DPResult, inject_noise
+from ..noise.dp import DPResult, inject_noise, stable_seed
 from ..redact.placeholder import RedactionResult, redact
 from ..redact.restore import restore
 from ..transport.cloud import forward_chat_completion
@@ -68,7 +68,7 @@ class OptionHPipeline:
             content = msg.get("content", "")
             if not isinstance(content, str) or not content:
                 continue
-            dr = inject_noise(content, epsilon=self.epsilon, seed=hash(content) & 0xFFFFFFFF)
+            dr = inject_noise(content, epsilon=self.epsilon, seed=stable_seed(content))
             dp_result = dr
             h_messages[i] = {**msg, "content": dr.noised_text}
 

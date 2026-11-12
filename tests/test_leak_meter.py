@@ -55,3 +55,51 @@ def test_surviving_text_still_counts_as_a_leak():
     # Only the first two labels were redacted; "globex.net" survived.
     lr = measure_leaks(sample, _rr(text, "host is ⟨HOSTNAME_INTERNAL_1⟩.globex.net today"))
     assert lr.combined_leak_rate > 0.0
+
+
+def _semantic_inputs():
+    from evals.runner import RunResult
+    from evals.schema import Annotation, Sample
+
+    note = Annotation(0, 3, "implicit", "the")
+    sample = Sample(id="s", text="the CFO of Acme", annotations=[note])
+    rr = RunResult("s", "B", sample.text, "the CFO of ⟨ORG_1⟩", "", "", [], {}, 0.0, "offline")
+    return sample, rr
+
+
+def test_semantic_judge_failure_is_an_error_not_a_safe_verdict() -> None:
+    # With Ollama down every sample used to score "safe": a 0% leak rate.
+    import asyncio
+    from unittest.mock import patch
+
+    import httpx
+
+    from evals.leak_meter import measure_semantic_leak
+
+    async def down(*_a, **_k):
+        raise httpx.ConnectError("down")
+
+    with patch("httpx.AsyncClient.post", side_effect=down):
+        result = asyncio.run(measure_semantic_leak(*_semantic_inputs()))
+    assert result.judge_error and not result.still_identifies
+
+
+def test_semantic_judge_verdict_tolerates_markdown() -> None:
+    import asyncio
+    from unittest.mock import patch
+
+    from evals.leak_meter import measure_semantic_leak
+
+    class Reply:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {"message": {"content": "**YES** - the title and company identify them"}}
+
+    async def judge(*_a, **_k):
+        return Reply()
+
+    with patch("httpx.AsyncClient.post", side_effect=judge):
+        result = asyncio.run(measure_semantic_leak(*_semantic_inputs()))
+    assert result.still_identifies and not result.judge_error

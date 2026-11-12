@@ -16,6 +16,7 @@ over the vocabulary — the paper documents the limitations.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import random
 from dataclasses import dataclass
@@ -233,6 +234,15 @@ class DPResult:
     substitution_probability: float
     words_total: int
     words_substituted: int
+
+
+def stable_seed(text: str) -> int:
+    """Reproducible 32-bit seed for ``text``.
+
+    ``hash(text)`` is salted per process (PYTHONHASHSEED), so seeding noise
+    with it gave a different "deterministic" output on every run.
+    """
+    return int.from_bytes(hashlib.sha256(text.encode("utf-8")).digest()[:4], "big")
 
 
 def substitution_probability(epsilon: float) -> float:

@@ -19,7 +19,7 @@ from typing import Any
 
 from llm_redactor.config import Config
 from llm_redactor.detect.orchestrator import detect_all
-from llm_redactor.noise.dp import inject_noise
+from llm_redactor.noise.dp import inject_noise, stable_seed
 from llm_redactor.pipeline.option_a import classify
 from llm_redactor.redact.placeholder import redact
 from llm_redactor.redact.restore import restore
@@ -207,7 +207,7 @@ async def run_option_a_offline(
     """
     t0 = time.perf_counter()
 
-    classification = await classify(
+    classification, _ = await classify(
         sample.text,
         endpoint=ollama_endpoint,
         model=ollama_model,
@@ -265,7 +265,7 @@ def run_option_bh_offline(
     dp_result = inject_noise(
         redaction_result.redacted_text,
         epsilon=epsilon,
-        seed=hash(text) & 0xFFFFFFFF,
+        seed=stable_seed(text),
     )
 
     elapsed = (time.perf_counter() - t0) * 1000
@@ -488,7 +488,7 @@ async def run_option_ab_offline(
     t0 = time.perf_counter()
 
     text = sample.text
-    classification = await classify(
+    classification, _ = await classify(
         text,
         endpoint=ollama_endpoint,
         model=ollama_model,
@@ -542,7 +542,7 @@ async def run_option_abc_offline(
     t0 = time.perf_counter()
 
     text = sample.text
-    classification = await classify(
+    classification, _ = await classify(
         text,
         endpoint=ollama_endpoint,
         model=ollama_model,

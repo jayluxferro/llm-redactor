@@ -57,19 +57,23 @@ def run_semantic_eval(
             )
         )
         semantic_results.append(sr)
-        status = "LEAK" if sr.still_identifies else "safe"
+        status = "ERROR" if sr.judge_error else "LEAK" if sr.still_identifies else "safe"
         print(f"  [{status}] {sr.sample_id}: {sr.judge_rationale[:80]}")
 
     total = len(semantic_results)
-    leaks = sum(1 for sr in semantic_results if sr.still_identifies)
-    rate = leaks / total if total else 0.0
+    judged = [sr for sr in semantic_results if not sr.judge_error]
+    leaks = sum(1 for sr in judged if sr.still_identifies)
+    # Unjudged samples are excluded, not counted as safe; None = nothing judged.
+    rate = round(leaks / len(judged), 4) if judged else None
 
     return {
         "option": option,
         "workload": "wl3_implicit",
         "total_samples": total,
+        "judged_samples": len(judged),
+        "judge_errors": total - len(judged),
         "semantic_leaks": leaks,
-        "semantic_leak_rate": round(rate, 4),
+        "semantic_leak_rate": rate,
         "details": [
             {
                 "sample_id": sr.sample_id,

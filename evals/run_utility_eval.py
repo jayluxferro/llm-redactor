@@ -180,7 +180,8 @@ def main() -> None:
         choices=["wl1_pii", "wl2_secrets", "wl3_implicit", "wl4_code"],
     )
     parser.add_argument("--option", default="B", choices=["B", "B+C", "B+H", "B+D", "A+B", "A+B+C"])
-    parser.add_argument("--use-ner", action="store_true", default=True)
+    # store_true with default=True could never be switched off.
+    parser.add_argument("--use-ner", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--max-samples", type=int, default=10)
     parser.add_argument("--cloud-endpoint", default="http://localhost:11435/v1")
     parser.add_argument("--cloud-model", default="mlx-community/Qwen3.5-4B-4bit")

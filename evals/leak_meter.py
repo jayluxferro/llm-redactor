@@ -142,6 +142,13 @@ class SemanticLeakResult:
     option: str
     still_identifies: bool
     judge_rationale: str
+    # The judge call failed or gave no YES/NO verdict.  Such samples must be
+    # excluded from the rate: counting them as "safe" reported a 0% semantic
+    # leak rate whenever Ollama was down.
+    judge_error: bool = False
+
+
+_VERDICT = re.compile(r"^\W*(YES|NO)\b", re.IGNORECASE)  # tolerates **YES**, "Yes," ...
 
 
 async def measure_semantic_leak(
@@ -181,16 +188,22 @@ async def measure_semantic_leak(
             resp = await client.post(url, json=body)
             resp.raise_for_status()
             raw = resp.json().get("message", {}).get("content", "")
-    except Exception:
-        raw = "ERROR"
+    except Exception as exc:
+        return SemanticLeakResult(
+            sample_id=sample.id,
+            option=run_result.option,
+            still_identifies=False,
+            judge_rationale=f"judge call failed: {type(exc).__name__}",
+            judge_error=True,
+        )
 
-    still_identifies = raw.strip().upper().startswith("YES")
-
+    verdict = _VERDICT.match(raw.strip())
     return SemanticLeakResult(
         sample_id=sample.id,
         option=run_result.option,
-        still_identifies=still_identifies,
+        still_identifies=verdict is not None and verdict.group(1).upper() == "YES",
         judge_rationale=raw.strip()[:200],
+        judge_error=verdict is None,
     )
 
 
