@@ -105,7 +105,17 @@ def _is_false_positive(span: Span) -> bool:
 
 
 def _merge_overlapping(spans: list[Span]) -> list[Span]:
-    """Deduplicate overlapping spans, keeping the highest-confidence one."""
+    """Merge overlapping spans into one span covering their union.
+
+    The label (kind, confidence, source) comes from the highest-confidence
+    member; ties keep the earlier, longer span, as before.  The *extent* is
+    the union.  Keeping only the winning span, as this used to, un-redacted
+    whatever only the losers covered: Presidio's ``url`` over
+    ``https://db-01.corp.example/admin?session=...`` lost to the regex
+    ``hostname_internal`` inside it, and the path and session token went
+    upstream in the clear.  Over-covering costs a slightly larger
+    placeholder; under-covering leaks.
+    """
     if not spans:
         return []
 
@@ -114,12 +124,23 @@ def _merge_overlapping(spans: list[Span]) -> list[Span]:
 
     for span in sorted_spans[1:]:
         prev = merged[-1]
-        if span.start < prev.end:
-            # Overlapping — keep the one with higher confidence
-            if span.confidence > prev.confidence:
-                merged[-1] = span
-        else:
+        if span.start >= prev.end:
             merged.append(span)
+            continue
+        label = span if span.confidence > prev.confidence else prev
+        if span.end > prev.end:
+            # span.text covers [span.start, span.end); append the part past prev.
+            text, end = prev.text + span.text[prev.end - span.start :], span.end
+        else:
+            text, end = prev.text, prev.end
+        merged[-1] = Span(
+            start=prev.start,
+            end=end,
+            kind=label.kind,
+            confidence=label.confidence,
+            text=text,
+            source=label.source,
+        )
 
     return merged
 
@@ -141,17 +162,23 @@ def configure_detection(
 
 
 def apply_detection_config(cfg: Config) -> None:
-    """Apply NER settings from a Config.
+    """Apply NER settings and custom patterns from a Config.
 
     Single source of truth for wiring detection out of config — shared by the
-    CLI (in-process commands) and the HTTP proxy's per-worker lifespan, so the
-    config→detector mapping lives in exactly one place.
+    CLI (in-process commands), the MCP server and the HTTP proxy's per-worker
+    lifespan, so the config→detector mapping lives in exactly one place.
+    (Custom patterns used to be loaded by the ``detect`` command only, so
+    ``serve`` and ``mcp`` silently ignored ``policy.extend_patterns_file``.)
     """
+    from .regex import load_custom_patterns
+
     configure_detection(
         ner_model=cfg.local_model.ner_model,
         ner_confidence_floor=cfg.local_model.ner_confidence_floor,
         ner_labels_to_ignore=cfg.local_model.ner_labels_to_ignore,
     )
+    if cfg.policy.extend_patterns_file:
+        load_custom_patterns(cfg.policy.extend_patterns_file)
 
 
 def _detect_and_merge(text: str, use_ner: bool) -> list[Span]:

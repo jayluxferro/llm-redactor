@@ -158,7 +158,10 @@ ALL_CATEGORIES: list[str] = sorted(set(CATEGORY_MAP.values()))
 # ---------------------------------------------------------------------------
 
 CATEGORY_ALIASES: dict[str, list[str]] = {
-    "all": ALL_CATEGORIES,
+    # "all" must mean all: kinds outside CATEGORY_MAP (custom patterns from
+    # extend_patterns_file) fall in "unknown", and leaving that out made every
+    # custom pattern detect-then-drop under the default policy.
+    "all": [*ALL_CATEGORIES, "unknown"],
     "pii": ["identity", "contact", "government_id", "financial", "medical", "temporal"],
     "secret": ["credential", "cloud_credential", "vendor_api_key", "private_key"],
     "org_identifier": ["infrastructure"],

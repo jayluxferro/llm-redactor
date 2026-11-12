@@ -227,3 +227,25 @@ def test_long_tail_vendor_keys_are_in_the_taxonomy():
         "replicate_token",
     ):
         assert CATEGORY_MAP.get(kind) == "vendor_api_key", kind
+
+
+def test_overlapping_spans_merge_to_their_union():
+    # NER's `url` covered the whole URL, regex `hostname_internal` only the
+    # host inside it; keeping just the higher-confidence span leaked the path
+    # and the session token.
+    from llm_redactor.detect.orchestrator import _merge_overlapping
+    from llm_redactor.detect.types import Span
+
+    t = "see https://db-01.corp.x/admin?session=s3cr3t ok"
+    u0, u1 = t.index("https"), t.index(" ok")
+    h0 = t.index("db-01")
+    h1 = h0 + len("db-01.corp.x")
+    url = Span(u0, u1, "url", 0.6, t[u0:u1], "ner")
+    host = Span(h0, h1, "hostname_internal", 1.0, t[h0:h1], "regex")
+    (merged,) = _merge_overlapping([url, host])
+    assert (merged.start, merged.end, merged.text) == (u0, u1, t[u0:u1])
+    assert merged.kind == "hostname_internal"  # label from the most confident member
+    # A later span that runs past the earlier one extends the union rightwards.
+    a = Span(0, 5, "a", 1.0, t[0:5], "regex")
+    b = Span(3, 12, "b", 0.5, t[3:12], "ner")
+    assert [(m.start, m.end, m.text) for m in _merge_overlapping([a, b])] == [(0, 12, t[0:12])]
