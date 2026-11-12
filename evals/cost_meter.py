@@ -1,7 +1,10 @@
-"""Token cost analysis — measures token overhead from redaction.
+"""Size overhead of redaction, in whitespace-separated words.
 
-Compares token counts of original vs redacted text using tiktoken
-(cl100k_base, GPT-4 family tokeniser).
+Not BPE tokens: an earlier docstring promised tiktoken, but the counter was
+switched to whitespace splitting to avoid tiktoken's first-use download
+(see _count_tokens).  Words are a consistent proxy for relative deltas, with
+one blind spot: a one-word value replaced by a one-word placeholder shows
+zero overhead even though the placeholder costs several BPE tokens.
 """
 
 from __future__ import annotations

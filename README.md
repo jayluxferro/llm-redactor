@@ -738,7 +738,7 @@ MIT
 ## Citation
 
 ```bibtex
-@article{agyemang2026llmredactor,
+@misc{agyemang2026llmredactor,
   title={LLM-Redactor: An Empirical Evaluation of Eight Techniques
          for Privacy-Preserving LLM Requests},
   author={Agyemang, Justice Owusu and Kponyo, Jerry John and

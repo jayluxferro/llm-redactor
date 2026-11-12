@@ -35,7 +35,7 @@ arxiv: paper
 # --- Figures ---
 
 figures:
-	uv run python -m evals.generate_figures
+	uv run --extra evals python -m evals.generate_figures
 
 # --- Tests ---
 
@@ -43,10 +43,10 @@ test:
 	uv run --extra dev pytest -v
 
 lint:
-	uv run --extra dev ruff check src tests evals tools
+	uv run --extra dev ruff check src tests evals tools scripts
 
 format-check:
-	uv run --extra dev ruff format --check src tests evals tools
+	uv run --extra dev ruff format --check src tests evals tools scripts
 
 install-hooks:
 	git config core.hooksPath .githooks

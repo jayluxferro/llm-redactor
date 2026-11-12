@@ -1,4 +1,10 @@
-"""Upload the LLM-Redactor Leak Benchmark to Hugging Face Datasets."""
+"""Upload the LLM-Redactor Leak Benchmark to Hugging Face Datasets.
+
+Run with:  uv run --extra hf python scripts/upload_hf_dataset.py
+
+The card's counts and annotation kinds are computed from the workload files
+at upload time (they were hard-coded, and the kind lists had drifted).
+"""
 
 import json
 from pathlib import Path
@@ -58,7 +64,7 @@ configs:
 
 # LLM-Redactor Leak Benchmark
 
-A benchmark of **1,300 synthetic prompts** with **4,014 ground-truth
+A benchmark of **<<N_SAMPLES>> synthetic prompts** with **<<N_ANNOTATIONS>> ground-truth
 annotations** spanning four workload classes, designed to evaluate
 privacy-preserving techniques for outbound LLM requests.
 
@@ -76,10 +82,7 @@ Released alongside the paper:
 
 | Config | Samples | Description |
 |--------|---------|-------------|
-| `wl1_pii` | 500 | Names, emails, phone numbers, addresses, SSNs, employee IDs |
-| `wl2_secrets` | 300 | API keys, AWS credentials, passwords, hostnames in configs/code |
-| `wl3_implicit` | 200 | Indirect references that identify people or organisations |
-| `wl4_code` | 300 | Internal function names, database schemas, project names |
+<<WORKLOAD_TABLE>>
 
 ## Usage
 
@@ -110,19 +113,12 @@ Each sample has the following fields:
 
 ## Annotation kinds
 
-**WL1 (PII):** `person`, `email`, `phone`, `address`, `ssn`, `employee_id`, `org_name`
-
-**WL2 (Secrets):** `aws_access_key`, `aws_secret_key`, `api_key`, `password`, `hostname`
-
-**WL3 (Implicit):** `implicit`, `org_name`
-
-**WL4 (Code):** `project_name`, `org_name`, `internal_function`, \
-`database_name`, `table_name`, `api_key`, `hostname`
+<<KIND_LISTS>>
 
 ## Citation
 
 ```bibtex
-@article{agyemang2026llmredactor,
+@misc{agyemang2026llmredactor,
   title={LLM-Redactor: An Empirical Evaluation of Eight Techniques for \
 Privacy-Preserving LLM Requests},
   author={Agyemang, Justice Owusu and Kponyo, Jerry John and Amponsah, \
@@ -150,6 +146,25 @@ def load_workload(name: str) -> list[dict]:
     return rows
 
 
+def render_card(workloads: dict[str, list[dict]]) -> str:
+    """The dataset card, with every number and kind list taken from the data."""
+    rows = [r for wl in workloads.values() for r in wl]
+    table = "\n".join(
+        f"| `{name}` | {len(workloads[name])} | {WORKLOADS[name]} |" for name in workloads
+    )
+    kinds = "\n\n".join(
+        f"**{name}:** "
+        + ", ".join(f"`{k}`" for k in sorted({a["kind"] for r in wl for a in r["annotations"]}))
+        for name, wl in workloads.items()
+    )
+    return (
+        DATASET_CARD.replace("<<N_SAMPLES>>", f"{len(rows):,}")
+        .replace("<<N_ANNOTATIONS>>", f"{sum(len(r['annotations']) for r in rows):,}")
+        .replace("<<WORKLOAD_TABLE>>", table)
+        .replace("<<KIND_LISTS>>", kinds)
+    )
+
+
 def main():
     features = Features(
         {
@@ -170,8 +185,8 @@ def main():
     # Build per-workload datasets and a combined one
     splits = {}
     all_rows = []
-    for wl_name in WORKLOADS:
-        rows = load_workload(wl_name)
+    loaded = {name: load_workload(name) for name in WORKLOADS}
+    for wl_name, rows in loaded.items():
         splits[wl_name] = Dataset.from_list(rows, features=features)
         all_rows.extend(rows)
         print(f"  {wl_name}: {len(rows)} samples")
@@ -184,7 +199,7 @@ def main():
     # Push as a DatasetDict with per-workload configs
     # First push the combined default config
     combined.push_to_hub(REPO_ID, private=False)
-    print("  Uploaded default config (all 1300 samples)")
+    print(f"  Uploaded default config (all {len(all_rows)} samples)")
 
     # Push each workload as a named config
     for wl_name, ds in splits.items():
@@ -194,7 +209,7 @@ def main():
     # Upload the dataset card (overwrites auto-generated one)
     api = HfApi()
     api.upload_file(
-        path_or_fileobj=DATASET_CARD.encode(),
+        path_or_fileobj=render_card(loaded).encode(),
         path_in_repo="README.md",
         repo_id=REPO_ID,
         repo_type="dataset",
