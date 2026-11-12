@@ -80,3 +80,64 @@ def test_partial_yaml_preserves_other_defaults():
     assert c.pipeline.opt_g_mpc.embedding_dim == 768  # default preserved
     assert c.pipeline.opt_b_redact.enabled is True  # default preserved
     os.unlink(f.name)
+
+
+# ── fixes from the project audit ─────────────────────────────────────────
+
+
+def test_unknown_config_keys_are_logged_not_silently_dropped(tmp_path, caplog) -> None:
+    import logging
+
+    from llm_redactor.config import load_config
+
+    cfg_file = tmp_path / "c.yaml"
+    cfg_file.write_text("transport:\n  tool_policy: refuse\npolicy: [all]\n")
+    with caplog.at_level(logging.WARNING, logger="llm_redactor.config"):
+        cfg = load_config(cfg_file)
+    messages = " ".join(r.getMessage() for r in caplog.records)
+    assert "transport.tool_policy" in messages  # the typo is named
+    assert "policy should be a mapping" in messages
+    assert cfg.transport.tools_policy == "bypass"  # still loads, defaults intact
+
+
+def test_unknown_tools_policy_fails_at_load(tmp_path, monkeypatch) -> None:
+    import pytest
+
+    from llm_redactor.config import load_config
+
+    cfg_file = tmp_path / "c.yaml"
+    cfg_file.write_text("transport:\n  tools_policy: refuze\n")  # typo: used to mean bypass
+    with pytest.raises(ValueError, match="tools_policy"):
+        load_config(cfg_file)
+    monkeypatch.setenv("LLM_REDACTOR_TOOLS_POLICY", "refuze")
+    with pytest.raises(ValueError, match="tools_policy"):
+        load_config(None)
+
+
+def test_explicit_missing_config_path_is_an_error(tmp_path) -> None:
+    import pytest
+    import typer
+
+    from llm_redactor.cli import DEFAULT_CONFIG, _resolve_config
+
+    assert str(_resolve_config(None)) == DEFAULT_CONFIG  # implicit default may be absent
+    with pytest.raises(typer.BadParameter):
+        _resolve_config(str(tmp_path / "typo.yaml"))
+
+
+def test_custom_patterns_load_everywhere_and_survive_the_default_policy(tmp_path) -> None:
+    from llm_redactor.config import Config
+    from llm_redactor.detect import regex
+    from llm_redactor.detect.orchestrator import apply_detection_config, detect_all
+    from llm_redactor.detect.types import filter_by_categories
+
+    patterns = tmp_path / "patterns.yaml"
+    patterns.write_text('patterns:\n  project_code: "PROJ-\\\\d{4}"\n')
+    cfg = Config()
+    cfg.policy.extend_patterns_file = str(patterns)
+    try:
+        apply_detection_config(cfg)  # what serve / mcp / detect all call
+        spans = filter_by_categories(detect_all("ticket PROJ-1234", use_ner=False), ["all"])
+        assert [(s.kind, s.text) for s in spans] == [("project_code", "PROJ-1234")]
+    finally:
+        regex._custom_patterns.pop("project_code", None)

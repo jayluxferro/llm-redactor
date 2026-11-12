@@ -17,18 +17,40 @@ app = typer.Typer(name="llm-redactor", no_args_is_help=True)
 console = Console()
 
 
+DEFAULT_CONFIG = "llm_redactor.yaml"
+_CONFIG_HELP = f"Config file path (default: ./{DEFAULT_CONFIG} if present, else built-in defaults)"
+
+
 def _apply_detection_config(cfg: Config) -> None:
-    """Apply detection settings from config (NER model, confidence floor)."""
+    """Apply detection settings from config (NER model, confidence floor, custom patterns)."""
     from .detect.orchestrator import apply_detection_config
 
     apply_detection_config(cfg)
 
 
+def _resolve_config(config_path: str | None) -> Path:
+    """The config file to load; an explicit path that does not exist is an error.
+
+    load_config falls back to built-in defaults for a missing file, which is
+    right for the implicit default but dangerous for a typo'd ``--config``: the
+    defaults point at api.openai.com, so the client's own credentials and
+    traffic would silently go to the wrong provider.
+    """
+    if config_path is None:
+        return Path(DEFAULT_CONFIG)
+    path = Path(config_path)
+    if not path.exists():
+        raise typer.BadParameter(f"config file not found: {path}", param_hint="--config")
+    return path
+
+
 @app.command()
 def serve(
-    port: int = typer.Option(7789, help="HTTP proxy port"),
+    port: int | None = typer.Option(
+        None, help="HTTP proxy port (default: transport.http_port from config, 7789)"
+    ),
     host: str = typer.Option("127.0.0.1", "--host", help="HTTP bind host"),
-    config_path: str = typer.Option("llm_redactor.yaml", "--config", help="Config file path"),
+    config_path: str | None = typer.Option(None, "--config", help=_CONFIG_HELP),
     upstream: str | None = typer.Option(None, "--upstream", help="Override the cloud upstream URL"),
     workers: int = typer.Option(
         0, "--workers", help="Worker processes (0 = auto: CPU count, capped at 8)"
@@ -47,11 +69,15 @@ def serve(
     # in this parent process: with workers > 1 each worker is a fresh spawn, so
     # every worker configures itself from the environment in its lifespan hook
     # (module globals set here would not survive the spawn).
-    cfg = load_config(Path(config_path))
+    path = _resolve_config(config_path)
+    cfg = load_config(path)
     resolved_upstream = upstream or cfg.cloud_target.endpoint
+    # transport.http_port (and LLM_REDACTOR_HTTP_PORT) used to be dead: the
+    # bind port came from this option's hard-coded default.
+    port = port or cfg.transport.http_port
 
     # Hand the config to workers via the environment (inherited across spawn).
-    os.environ["LLM_REDACTOR_CONFIG"] = str(Path(config_path))
+    os.environ["LLM_REDACTOR_CONFIG"] = str(path)
     os.environ["LLM_REDACTOR_PORT"] = str(port)
     if upstream:
         os.environ["LLM_REDACTOR_UPSTREAM"] = upstream
@@ -76,12 +102,12 @@ def serve(
 
 @app.command()
 def mcp(
-    config_path: str = typer.Option("llm_redactor.yaml", "--config", help="Config file path"),
+    config_path: str | None = typer.Option(None, "--config", help=_CONFIG_HELP),
 ) -> None:
     """Start the llm-redactor MCP stdio server."""
     from .transport.mcp_server import run_mcp
 
-    cfg = load_config(Path(config_path))
+    cfg = load_config(_resolve_config(config_path))
     _apply_detection_config(cfg)
     asyncio.run(run_mcp(cfg))
 
@@ -91,17 +117,14 @@ def detect(
     text: str = typer.Argument(..., help="Text to scan for sensitive spans"),
     ner: bool = typer.Option(False, "--ner", help="Enable Presidio NER (slower, more accurate)"),
     redact: bool = typer.Option(False, "--redact", help="Show redacted output preview"),
-    config_path: str = typer.Option("llm_redactor.yaml", "--config", help="Config file path"),
+    config_path: str | None = typer.Option(None, "--config", help=_CONFIG_HELP),
 ) -> None:
     """Dry-run: detect and optionally redact sensitive spans without sending anything."""
     from .detect.orchestrator import detect_all
-    from .detect.regex import load_custom_patterns
     from .detect.types import filter_by_categories
 
-    cfg = load_config(Path(config_path))
+    cfg = load_config(_resolve_config(config_path))
     _apply_detection_config(cfg)
-    if cfg.policy.extend_patterns_file:
-        load_custom_patterns(cfg.policy.extend_patterns_file)
 
     spans = detect_all(text, use_ner=ner)
     spans = filter_by_categories(spans, cfg.policy.categories)

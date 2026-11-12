@@ -15,6 +15,7 @@ Tools:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import secrets
@@ -82,8 +83,15 @@ async def _detect_text(
             backend=_config.pipeline.llm_validation.backend,
         )
     else:
-        spans = detect_all(text, use_ner=use_ner)
+        # spaCy NER is CPU-bound; running it inline froze the stdio event loop
+        # (no pings, no concurrent tool calls) for the duration of detection.
+        spans = await asyncio.to_thread(detect_all, text, use_ner)
     return filter_by_categories(spans, _config.policy.categories)
+
+
+def _count_restored(text: str, reverse_map: dict[str, str]) -> int:
+    """Placeholders actually present in ``text`` (not the size of the map)."""
+    return sum(1 for placeholder in reverse_map if placeholder in text)
 
 
 @server.list_tools()
@@ -334,9 +342,7 @@ async def _handle_llm_chat(arguments: dict[str, Any]) -> list[TextContent]:
                     "response": restored_text,
                     "model": cloud_response.get("model", model),
                     "detections": total_detections,
-                    "placeholders_restored": len(combined_reverse_map)
-                    if combined_reverse_map
-                    else 0,
+                    "placeholders_restored": _count_restored(response_text, combined_reverse_map),
                     "usage": cloud_response.get("usage"),
                 }
             ),
@@ -439,7 +445,7 @@ def _handle_restore(arguments: dict[str, Any]) -> list[TextContent]:
             text=json.dumps(
                 {
                     "restored_text": restored_text,
-                    "placeholders_restored": len(reverse_map),
+                    "placeholders_restored": _count_restored(text, reverse_map),
                 }
             ),
         )

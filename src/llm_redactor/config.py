@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -175,14 +176,25 @@ class Config:
     policy: PolicyConfig = field(default_factory=PolicyConfig)
 
 
-def _merge_dataclass(dc_type: type, raw: dict[str, Any]) -> Any:
-    """Recursively merge a raw dict into a dataclass, respecting defaults."""
+_LOG = logging.getLogger(__name__)
+
+
+def _merge_dataclass(dc_type: type, raw: dict[str, Any], prefix: str = "") -> Any:
+    """Recursively merge a raw dict into a dataclass, respecting defaults.
+
+    Unknown keys are still ignored (old configs keep loading) but now logged:
+    a typo such as ``tool_policy`` used to vanish silently, leaving the
+    default in force with no hint why the setting had no effect.
+    """
     import dataclasses
     import typing
 
     # Resolve string annotations to real types.
     hints = typing.get_type_hints(dc_type)
     kwargs: dict[str, Any] = {}
+    names = {f.name for f in dataclasses.fields(dc_type)}
+    for key in sorted(set(raw) - names, key=str):
+        _LOG.warning("config: ignoring unknown key %s%s", prefix, key)
 
     for f in dataclasses.fields(dc_type):
         if f.name not in raw:
@@ -191,7 +203,10 @@ def _merge_dataclass(dc_type: type, raw: dict[str, Any]) -> Any:
         resolved_type = hints.get(f.name)
         # If the resolved type is a dataclass, recurse.
         if isinstance(resolved_type, type) and dataclasses.is_dataclass(resolved_type):
-            kwargs[f.name] = _merge_dataclass(resolved_type, val if isinstance(val, dict) else {})
+            if not isinstance(val, dict):
+                _LOG.warning("config: %s%s should be a mapping; using defaults", prefix, f.name)
+                val = {}
+            kwargs[f.name] = _merge_dataclass(resolved_type, val, f"{prefix}{f.name}.")
         else:
             kwargs[f.name] = val
 
@@ -243,18 +258,37 @@ def _validate_api_key_env(config: Config) -> None:
         )
 
 
+_TOOLS_POLICIES = frozenset({"bypass", "refuse"})
+
+
+def _validate_tools_policy(config: Config) -> None:
+    """Fail at load on an unknown tools_policy.
+
+    The proxy compares against "refuse" only, so any other value, including a
+    typo of "refuse", meant bypass: tool-bearing requests forwarded
+    unredacted.  Same fail-at-load rule as LLMValidationConfig.backend.
+    """
+    policy = config.transport.tools_policy
+    if policy not in _TOOLS_POLICIES:
+        raise ValueError(f"transport.tools_policy must be 'bypass' or 'refuse', got {policy!r}")
+
+
+def _validate(config: Config) -> Config:
+    _validate_api_key_env(config)
+    _validate_tools_policy(config)
+    return config
+
+
 def load_config(path: Path | None = None) -> Config:
     """Load config from YAML file with env overrides.
 
     Precedence: environment variables > YAML file > dataclass defaults.
+    A missing file means defaults (callers that take an explicit path from
+    the user check that it exists; see cli._resolve_config).
     """
     if path is None or not path.exists():
-        cfg = _env_overrides(Config())
-        _validate_api_key_env(cfg)
-        return cfg
+        return _validate(_env_overrides(Config()))
 
     raw: dict[str, Any] = yaml.safe_load(path.read_text()) or {}
     config = _merge_dataclass(Config, raw)
-    config = _env_overrides(config)
-    _validate_api_key_env(config)
-    return config
+    return _validate(_env_overrides(config))
