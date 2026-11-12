@@ -6,6 +6,9 @@ bearer tokens, certificates, and credentials. ~300 samples.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+
 from ..schema import Annotation, Sample
 from .corpus import Corpus
 
@@ -166,6 +169,9 @@ def _json_config(c: Corpus) -> tuple[str, list[Annotation]]:
 def _ssh_config(c: Corpus) -> tuple[str, list[Annotation]]:
     hostname = c.hostname()
     ip = c.ip_v4()
+    # The key body is derived from the hostname instead of drawn from the
+    # corpus RNG, so every other sample in the workload stays byte-identical.
+    body = base64.b64encode(hashlib.sha256(hostname.encode()).digest() * 2).decode()
     text = (
         f"Host production\n"
         f"  HostName {hostname}\n"
@@ -173,15 +179,18 @@ def _ssh_config(c: Corpus) -> tuple[str, list[Annotation]]:
         f"  IdentityFile ~/.ssh/prod_rsa\n"
         f"  # IP: {ip}\n"
         f"  # -----BEGIN RSA PRIVATE KEY-----\n"
-        f"  # MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn...\n"
+        f"  # MIIEpAIBAAKCAQEA{body}\n"
         f"  # -----END RSA PRIVATE KEY-----\n"
     )
     anns: list[Annotation] = []
     _track(text, hostname, "hostname", anns)
     _track(text, ip, "ip_address", anns)
-    # Track the PEM marker
-    pem_marker = "-----BEGIN RSA PRIVATE KEY-----"
-    _track(text, pem_marker, "pem_private_key", anns)
+    # The whole block is the secret.  Annotating only the BEGIN line (a
+    # public, constant marker) scored 0% leak for stripping that header while
+    # the key body went out untouched.
+    begin = text.index("-----BEGIN RSA PRIVATE KEY-----")
+    end = text.index("-----END RSA PRIVATE KEY-----") + len("-----END RSA PRIVATE KEY-----")
+    _track(text, text[begin:end], "pem_private_key", anns)
     return text, anns
 
 

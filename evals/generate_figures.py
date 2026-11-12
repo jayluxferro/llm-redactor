@@ -41,13 +41,15 @@ def collect_all_results() -> list[dict]:
 def fig_leak_rates(rows: list[dict]) -> None:
     """Bar chart: exact leak rate per option per workload."""
     # Select the key options for the main figure.
+    # Rows are labelled with the requested option (run_eval passes it to
+    # measure_workload); route labels like "A(local)" varied per run.
     key_options = {
         "baseline": "Baseline",
         "B": "B (NER)",
         "B+C": "B+C",
-        "A(local)": "A",
-        "A+B(cloud)": "A+B",
-        "A+B+C(cloud)": "A+B+C",
+        "A": "A",
+        "A+B": "A+B",
+        "A+B+C": "A+B+C",
     }
 
     workloads = ["wl1_pii", "wl2_secrets", "wl3_implicit", "wl4_code"]
@@ -66,7 +68,7 @@ def fig_leak_rates(rows: list[dict]) -> None:
             if matching:
                 rates.append(float(matching[0]["exact_leak_rate"]))
             else:
-                rates.append(0.0)
+                rates.append(float("nan"))  # a gap, not 0% leak
         ax.bar(x + i * width, rates, width, label=opt_label, color=colors[i])
 
     ax.set_xlabel("Workload", fontsize=12)
@@ -87,16 +89,22 @@ def fig_leak_rates(rows: list[dict]) -> None:
 def fig_leak_by_kind(rows: list[dict]) -> None:
     """Horizontal bar chart: Option B (NER) leak rate by annotation kind on WL1."""
     # Read the leak breakdown from the NER results.
-    breakdown_path = RESULTS_DIR / "results_b_ner_v2" / "leak_breakdown.md"
+    # run_eval writes Option B to evals/results_b; read only its WL1 table
+    # (the file holds one table per workload, which used to be mixed in).
+    breakdown_path = RESULTS_DIR / "results_b" / "leak_breakdown.md"
     if not breakdown_path.exists():
-        breakdown_path = RESULTS_DIR / "results_ner" / "leak_breakdown.md"
-    if not breakdown_path.exists():
-        print("  (skipped leak_by_kind — no breakdown file)")
+        print("  (skipped leak_by_kind — run `python -m evals.run_eval --option B --use-ner`)")
         return
 
     kinds = []
     rates = []
+    in_wl1 = False
     for line in breakdown_path.read_text().splitlines():
+        if line.startswith("### "):
+            in_wl1 = line.startswith("### wl1_pii")
+            continue
+        if not in_wl1:
+            continue
         if line.startswith("|") and not line.startswith("| Kind") and not line.startswith("|---"):
             parts = [p.strip() for p in line.split("|") if p.strip()]
             if len(parts) == 2:

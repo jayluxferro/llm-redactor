@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,7 +29,7 @@ class EvalRow:
     exact_leak_rate: float
     partial_leak_rate: float
     combined_leak_rate: float
-    false_positive_rate: float
+    false_discovery_rate: float
     # Utility fields (filled only if utility data available).
     quality_delta: float | None = None  # mean judge score
     baseline_preferred_pct: float | None = None
@@ -47,7 +48,7 @@ def leak_summary_to_row(summary: WorkloadLeakSummary) -> EvalRow:
         exact_leak_rate=summary.exact_leak_rate,
         partial_leak_rate=summary.partial_leak_rate,
         combined_leak_rate=summary.combined_leak_rate,
-        false_positive_rate=summary.false_positive_rate,
+        false_discovery_rate=summary.false_discovery_rate,
     )
 
 
@@ -61,7 +62,9 @@ def add_latency_to_row(
     sorted_lat = sorted(latencies_ms)
     n = len(sorted_lat)
     row.latency_ms_median = sorted_lat[n // 2]
-    row.latency_ms_p95 = sorted_lat[int(n * 0.95)]
+    # Nearest-rank percentile: rank ceil(0.95 n), index one less.  The old
+    # sorted[int(0.95 n)] was one rank high (the max for n <= 19).
+    row.latency_ms_p95 = sorted_lat[max(0, math.ceil(0.95 * n) - 1)]
     return row
 
 
@@ -94,7 +97,7 @@ def rows_to_markdown(rows: list[EvalRow]) -> str:
         lines.append(
             f"| {r.option} | {r.workload} | {r.num_samples} | "
             f"{r.exact_leak_rate:.3f} | {r.partial_leak_rate:.3f} | "
-            f"{r.combined_leak_rate:.3f} | {r.false_positive_rate:.3f} | "
+            f"{r.combined_leak_rate:.3f} | {r.false_discovery_rate:.3f} | "
             f"{qd} | {lp50} | {lp95} |"
         )
     return "\n".join(lines)
@@ -113,7 +116,7 @@ def rows_to_csv(rows: list[EvalRow]) -> str:
             "exact_leak_rate",
             "partial_leak_rate",
             "combined_leak_rate",
-            "false_positive_rate",
+            "false_discovery_rate",
             "quality_delta",
             "latency_ms_median",
             "latency_ms_p95",
@@ -129,7 +132,7 @@ def rows_to_csv(rows: list[EvalRow]) -> str:
                 f"{r.exact_leak_rate:.6f}",
                 f"{r.partial_leak_rate:.6f}",
                 f"{r.combined_leak_rate:.6f}",
-                f"{r.false_positive_rate:.6f}",
+                f"{r.false_discovery_rate:.6f}",
                 f"{r.quality_delta:.6f}" if r.quality_delta is not None else "",
                 f"{r.latency_ms_median:.3f}" if r.latency_ms_median is not None else "",
                 f"{r.latency_ms_p95:.3f}" if r.latency_ms_p95 is not None else "",
@@ -138,16 +141,22 @@ def rows_to_csv(rows: list[EvalRow]) -> str:
     return buf.getvalue()
 
 
+def _latex(text: str) -> str:
+    """Escape LaTeX specials in table cells (wl1_pii: "_" starts a subscript)."""
+    return "".join("\\" + c if c in "_&%$#{}" else c for c in text)
+
+
 def rows_to_latex(rows: list[EvalRow]) -> str:
     """Format rows as a LaTeX table body (for paper.tex)."""
     lines = []
     for r in rows:
         qd = f"{r.quality_delta:+.3f}" if r.quality_delta is not None else "---"
         lp50 = f"{r.latency_ms_median:.1f}" if r.latency_ms_median is not None else "---"
+        option, workload = _latex(r.option), _latex(r.workload)
         lines.append(
-            f"  {r.option} & {r.workload} & {r.num_samples} & "
+            f"  {option} & {workload} & {r.num_samples} & "
             f"{r.exact_leak_rate:.3f} & {r.partial_leak_rate:.3f} & "
-            f"{r.combined_leak_rate:.3f} & {r.false_positive_rate:.3f} & "
+            f"{r.combined_leak_rate:.3f} & {r.false_discovery_rate:.3f} & "
             f"{qd} & {lp50} \\\\"
         )
     return "\n".join(lines)
@@ -208,7 +217,8 @@ def _generate_figures(rows: list[EvalRow], output_dir: Path) -> None:
         rates = []
         for wl in workloads:
             matching = [r for r in rows if r.option == opt and r.workload == wl]
-            rates.append(matching[0].exact_leak_rate if matching else 0.0)
+            # A missing cell is a gap, not 0% leak (which reads as perfect).
+            rates.append(matching[0].exact_leak_rate if matching else float("nan"))
         positions = [x + i * width for x in range(len(workloads))]
         ax.bar(positions, rates, width, label=opt)
 

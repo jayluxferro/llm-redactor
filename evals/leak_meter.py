@@ -3,7 +3,13 @@
 Three levels of leak measurement:
 
 1. **Exact leak**: ground-truth annotation text appears verbatim in outgoing text.
-2. **Partial leak**: a substring (≥4 chars) of the annotation appears in outgoing text.
+2. **Partial leak**: an *informative token* of the annotation (a word of at
+   least 4 characters that is not a stopword) appears as a whole word in the
+   outgoing text, and the sample's non-sensitive text does not contain it
+   (otherwise its presence proves nothing).  Perfect redaction scores 0 by
+   construction (pinned by a test).  The old definition, "any 4-character
+   substring", scored perfect redaction as leaking up to 71% on WL3
+   ("rene" in "renewal" leaked "Irene"; "the " leaked every phrase).
 
 Both are evaluated against the outgoing text with placeholder tokens stripped
 (see ``_redacted_view``).  Placeholders embed the kind name — ``⟨PRIVATE_KEY_PEM_1⟩`` —
@@ -24,7 +30,16 @@ from pathlib import Path
 from .runner import RunResult
 from .schema import Sample, read_workload
 
-MIN_PARTIAL_LEN = 4  # minimum substring length for partial leak
+MIN_PARTIAL_LEN = 4  # minimum length of an informative token
+
+_TOKEN = re.compile(r"\w+")
+# Function words: a shared "with" or "from" is not evidence of anything.
+_STOPWORDS = frozenset(
+    "about after also been before being between both could does from have here into "
+    "just more most much only other over same should some such than that their them "
+    "then there these they this those through under very were what when where which "
+    "while will with would your".split()
+)
 
 # Placeholder tokens, e.g. ``⟨PRIVATE_KEY_PEM_1⟩``.
 _PLACEHOLDER = re.compile(r"⟨[^⟩]*⟩")
@@ -57,12 +72,31 @@ class LeakResult:
     details: list[dict]  # per-annotation detail
 
 
+def _tokens(text: str) -> set[str]:
+    return {t.lower() for t in _TOKEN.findall(text)}
+
+
+def _informative(text: str) -> set[str]:
+    return {t for t in _tokens(text) if len(t) >= MIN_PARTIAL_LEN and t not in _STOPWORDS}
+
+
+def _outside_tokens(sample: Sample) -> set[str]:
+    """Tokens of the sample's NON-sensitive text (every annotation masked)."""
+    chars = list(sample.text)
+    for ann in sample.annotations:
+        for i in range(max(ann.start, 0), min(ann.end, len(chars))):
+            chars[i] = " "
+    return _tokens("".join(chars))
+
+
 def measure_leaks(
     sample: Sample,
     run_result: RunResult,
 ) -> LeakResult:
     """Measure leak rates by comparing annotations against outgoing text."""
     outgoing = _redacted_view(run_result.outgoing_text)
+    sent_tokens = _tokens(outgoing)
+    outside = _outside_tokens(sample)
     exact_leaks = 0
     partial_leaks = 0
     leaked_kinds: dict[str, int] = {}
@@ -73,8 +107,7 @@ def measure_leaks(
         partial = False
 
         if not exact:
-            # Check substrings of the annotation text.
-            partial = _has_partial_leak(ann.text, outgoing)
+            partial = bool((_informative(ann.text) - outside) & sent_tokens)
 
         if exact:
             exact_leaks += 1
@@ -109,29 +142,6 @@ def measure_leaks(
         leaked_kinds=leaked_kinds,
         details=details,
     )
-
-
-def _has_partial_leak(annotation_text: str, outgoing: str) -> bool:
-    """Check if any substring of annotation_text (≥ MIN_PARTIAL_LEN chars)
-    appears in the outgoing text.
-
-    For multi-word annotations (e.g. "Alice Hernandez"), check each word
-    individually as well as sliding windows.
-    """
-    # Check individual words first (most common partial leak).
-    words = annotation_text.split()
-    for word in words:
-        if len(word) >= MIN_PARTIAL_LEN and word in outgoing:
-            return True
-
-    # Sliding window over the full string.
-    for length in range(MIN_PARTIAL_LEN, len(annotation_text)):
-        for start in range(len(annotation_text) - length + 1):
-            substr = annotation_text[start : start + length]
-            if substr in outgoing:
-                return True
-
-    return False
 
 
 @dataclass
@@ -221,15 +231,25 @@ class WorkloadLeakSummary:
     partial_leak_rate: float
     combined_leak_rate: float
     leak_rate_by_kind: dict[str, float]  # kind → exact leak rate
-    false_positive_rate: float  # detected spans that were NOT in annotations
+    # Detected spans overlapping no annotation, over all detected spans with
+    # offsets: a false DISCOVERY rate (the denominator is detections, not
+    # negatives).  Detections without offsets (non-span options) are skipped.
+    false_discovery_rate: float
     per_sample: list[LeakResult]
 
 
 def measure_workload(
     workload_path: Path,
     run_results: list[RunResult],
+    *,
+    option: str | None = None,
 ) -> WorkloadLeakSummary:
-    """Measure leaks across an entire workload."""
+    """Measure leaks across an entire workload.
+
+    ``option`` labels the summary; pass the option that was requested.  The
+    fallback, the first sample's route (``A(local)``, ``B(C-rejected)``),
+    varies with which sample happens to come first.
+    """
     samples = read_workload(workload_path)
     sample_map = {s.id: s for s in samples}
 
@@ -262,11 +282,14 @@ def measure_workload(
         for kind, count in lr.leaked_kinds.items():
             kind_leaked[kind] = kind_leaked.get(kind, 0) + count
 
-        # False positive counting.
-        ann_texts = {a.text for a in sample.annotations}
+        # False discoveries: span detections that overlap no annotation.  (Exact
+        # text equality used to count "Bearer <token>" against an annotated
+        # "<token>" as a false positive: 154 of 154 on wl2 overlapped truth.)
         for det in rr.detections:
+            if "start" not in det or "end" not in det:
+                continue
             total_detections += 1
-            if det["text"] in ann_texts:
+            if any(det["start"] < a.end and a.start < det["end"] for a in sample.annotations):
                 true_positive_detections += 1
 
     exact_rate = total_exact / total_annotations if total_annotations else 0.0
@@ -280,9 +303,10 @@ def measure_workload(
         leak_by_kind[kind] = kl / kt if kt else 0.0
 
     fp = total_detections - true_positive_detections
-    fp_rate = fp / total_detections if total_detections else 0.0
+    fdr = fp / total_detections if total_detections else 0.0
 
-    option = run_results[0].option if run_results else "unknown"
+    if option is None:
+        option = run_results[0].option if run_results else "unknown"
 
     return WorkloadLeakSummary(
         workload=workload_path.parent.name,
@@ -295,6 +319,6 @@ def measure_workload(
         partial_leak_rate=partial_rate,
         combined_leak_rate=combined_rate,
         leak_rate_by_kind=leak_by_kind,
-        false_positive_rate=fp_rate,
+        false_discovery_rate=fdr,
         per_sample=per_sample,
     )

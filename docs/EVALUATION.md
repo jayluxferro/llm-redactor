@@ -59,13 +59,19 @@ Each workload's ground truth lives in
 - **Leak rate**: fraction of ground-truth sensitive spans that
   survived the pipeline and appear verbatim in the outgoing request
   to the cloud target.
-- **Partial leak rate**: fraction of sensitive spans that appear
-  partially (substring match of ≥ 4 chars).
+- **Partial leak rate**: fraction of sensitive spans (not leaked exactly)
+  with an informative token, a word of ≥ 4 characters that is not a
+  stopword, sent as a whole word, unless that word also occurs in the
+  sample's non-sensitive text. Perfect redaction scores 0 (a test pins this).
+  Results from before this definition used "any 4-character substring",
+  which scored perfect redaction as up to 71% leaking on WL3.
 - **Semantic leak rate**: fraction of sensitive *meaning* that
   survives, measured by a judge-model comparing original and
   redacted text.
-- **False positive rate**: fraction of non-sensitive spans
-  incorrectly redacted (causes quality loss).
+- **False discovery rate**: fraction of detected spans that overlap no
+  ground-truth annotation (quality loss from over-redaction). Earlier
+  results called this "false positive rate" and matched by exact text, so
+  `Bearer <token>` against an annotated `<token>` counted as a false hit.
 
 ### Utility metrics
 

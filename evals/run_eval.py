@@ -70,7 +70,7 @@ def _print_summary(summary) -> None:
     print(f"  Exact leak rate:    {summary.exact_leak_rate:.3f}")
     print(f"  Partial leak rate:  {summary.partial_leak_rate:.3f}")
     print(f"  Combined leak rate: {summary.combined_leak_rate:.3f}")
-    print(f"  False positive rate: {summary.false_positive_rate:.3f}")
+    print(f"  False discovery rate: {summary.false_discovery_rate:.3f}")
     if summary.leak_rate_by_kind:
         print("  Leak by kind:")
         for kind, rate in sorted(summary.leak_rate_by_kind.items(), key=lambda x: -x[1]):
@@ -190,7 +190,7 @@ def main() -> None:
             print(f"  Routed local: {local}, routed cloud: {cloud} ({pct:.1f}% local)")
 
         print(f"Measuring leaks on {wl_name}...")
-        summary = measure_workload(wl_path, results)
+        summary = measure_workload(wl_path, results, option=args.option)
         summaries.append(summary)
 
         row = leak_summary_to_row(summary)

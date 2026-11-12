@@ -81,7 +81,14 @@ def run_option_b_offline(
         response_text="",
         restored_text="",
         detections=[
-            {"kind": s.kind, "confidence": s.confidence, "text": s.text, "source": s.source}
+            {
+                "kind": s.kind,
+                "confidence": s.confidence,
+                "text": s.text,
+                "source": s.source,
+                "start": s.start,
+                "end": s.end,
+            }
             for s in spans
         ],
         reverse_map=result.reverse_map,
@@ -129,7 +136,14 @@ async def run_option_b_online(
         response_text=response_text,
         restored_text=restored_text,
         detections=[
-            {"kind": s.kind, "confidence": s.confidence, "text": s.text, "source": s.source}
+            {
+                "kind": s.kind,
+                "confidence": s.confidence,
+                "text": s.text,
+                "source": s.source,
+                "start": s.start,
+                "end": s.end,
+            }
             for s in spans
         ],
         reverse_map=redaction_result.reverse_map,
@@ -184,7 +198,14 @@ async def run_option_bc_offline(
         response_text="",
         restored_text="",
         detections=[
-            {"kind": s.kind, "confidence": s.confidence, "text": s.text, "source": s.source}
+            {
+                "kind": s.kind,
+                "confidence": s.confidence,
+                "text": s.text,
+                "source": s.source,
+                "start": s.start,
+                "end": s.end,
+            }
             for s in spans
         ],
         reverse_map=redaction_result.reverse_map,
@@ -278,7 +299,14 @@ def run_option_bh_offline(
         response_text="",
         restored_text="",
         detections=[
-            {"kind": s.kind, "confidence": s.confidence, "text": s.text, "source": s.source}
+            {
+                "kind": s.kind,
+                "confidence": s.confidence,
+                "text": s.text,
+                "source": s.source,
+                "start": s.start,
+                "end": s.end,
+            }
             for s in spans
         ],
         reverse_map=redaction_result.reverse_map,
@@ -464,7 +492,14 @@ async def run_option_bd_offline(
         response_text="",
         restored_text="",
         detections=[
-            {"kind": s.kind, "confidence": s.confidence, "text": s.text, "source": s.source}
+            {
+                "kind": s.kind,
+                "confidence": s.confidence,
+                "text": s.text,
+                "source": s.source,
+                "start": s.start,
+                "end": s.end,
+            }
             for s in spans
         ],
         reverse_map=result.reverse_map,
@@ -522,7 +557,14 @@ async def run_option_ab_offline(
         response_text="",
         restored_text="",
         detections=[
-            {"kind": s.kind, "confidence": s.confidence, "text": s.text, "source": s.source}
+            {
+                "kind": s.kind,
+                "confidence": s.confidence,
+                "text": s.text,
+                "source": s.source,
+                "start": s.start,
+                "end": s.end,
+            }
             for s in spans
         ],
         reverse_map=result.reverse_map,
@@ -591,7 +633,14 @@ async def run_option_abc_offline(
         response_text="",
         restored_text="",
         detections=[
-            {"kind": s.kind, "confidence": s.confidence, "text": s.text, "source": s.source}
+            {
+                "kind": s.kind,
+                "confidence": s.confidence,
+                "text": s.text,
+                "source": s.source,
+                "start": s.start,
+                "end": s.end,
+            }
             for s in spans
         ],
         reverse_map=redaction_result.reverse_map,
