@@ -231,6 +231,39 @@ def test_responses_request_redaction_and_response_restore() -> None:
     assert json.loads(output[1]["arguments"]) == {"to": EMAIL}
 
 
+def test_replayed_reasoning_and_shell_items_are_redacted_and_restored() -> None:
+    # Codex replays its reasoning items (store=false) and shell calls every
+    # turn.  The proxy restores real values into reasoning summaries on the
+    # way back, so a replayed summary carried them upstream in the clear.
+    fernet = "gAAAAABl9xF5uS1foJ2dK9lM4T3Q8W7Y6X5Z4C3V2B1N0M9L8K7J6H5G4F3E2D1C0="
+    body = {
+        "model": "m",
+        "input": [
+            {"type": "reasoning", "id": "rs_1", "encrypted_content": fernet,
+             "summary": [{"type": "summary_text", "text": f"mail {EMAIL}"}],
+             "content": [{"type": "reasoning_text", "text": f"key {AWS}"}]},
+            {"type": "local_shell_call", "call_id": "s1", "status": "completed",
+             "action": {"type": "exec", "command": ["bash", "-lc", f"echo {AWS}"],
+                        "env": {"TOKEN": AWS}}},
+        ],
+    }  # fmt: skip
+    reply = {
+        "output": [
+            {"type": "local_shell_call", "call_id": "s2",
+             "action": {"type": "exec", "command": ["bash", "-lc", f"mail {PH}"]}},
+        ]
+    }  # fmt: skip
+    sent, fake = _capture(reply)
+    with patch("llm_redactor.transport.http_proxy.forward_openai_json", side_effect=fake):
+        resp = _client().post("/v1/responses", json=body)
+    assert EMAIL not in json.dumps(sent) and AWS not in json.dumps(sent)
+    reasoning = sent["input"][0]
+    assert reasoning["encrypted_content"] == fernet and reasoning["id"] == "rs_1"
+    assert reasoning["summary"][0]["type"] == "summary_text"
+    assert sent["input"][1]["action"]["command"][:2] == ["bash", "-lc"]
+    assert resp.json()["output"][0]["action"]["command"] == ["bash", "-lc", f"mail {EMAIL}"]
+
+
 def _responses_event(event: dict[str, Any]) -> bytes:
     return f"event: {event['type']}\ndata: {json.dumps(event)}\n\n".encode()
 

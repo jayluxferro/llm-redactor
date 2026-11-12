@@ -311,10 +311,11 @@ class RequestScrubber:
         return raw if redacted == value else json.dumps(redacted, ensure_ascii=False)
 
     async def part(self, part: Any, *, tool_content: bool = False) -> Any:
-        """A content part: ``text`` (chat) or ``input_text``/``output_text`` (responses)."""
+        """A content part: ``text`` (chat), or ``input_text``/``output_text`` and the
+        reasoning item's ``summary_text``/``reasoning_text`` (responses)."""
         if (
             isinstance(part, dict)
-            and part.get("type") in ("text", "input_text", "output_text")
+            and part.get("type") in _TEXT_PART_TYPES
             and isinstance(part.get("text"), str)
         ):
             return {**part, "text": await self.text(part["text"], tool_content=tool_content)}
@@ -329,6 +330,11 @@ class RequestScrubber:
 
     def result(self, redacted_text: str) -> RedactionResult:
         return RedactionResult(redacted_text, dict(self.reverse_map), list(self.placeholders))
+
+
+_TEXT_PART_TYPES = frozenset(
+    {"text", "input_text", "output_text", "summary_text", "reasoning_text"}
+)
 
 
 def restore_openai_message(message: dict[str, Any], reverse_map: dict[str, str]) -> None:

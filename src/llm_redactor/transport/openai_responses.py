@@ -5,9 +5,16 @@ shapes, so it gets its own helpers instead of riding on the chat path:
 
 request   ``instructions`` and ``input`` (a string, or items: messages with
           ``input_text`` / ``output_text`` parts, ``function_call`` arguments,
-          ``function_call_output`` output, custom-tool input/output)
+          ``function_call_output`` output, custom-tool input/output, local
+          shell commands, and replayed reasoning summaries / text; never
+          ``encrypted_content``)
 response  ``output`` items (message text, function-call arguments, custom-tool
-          input, reasoning summaries)
+          input, local shell commands, reasoning summaries)
+
+Whatever is restored on the way back must be redacted on the way out:
+clients replay earlier output items (Codex sends its reasoning items and
+shell calls every turn), so an item kind restored here but not redacted
+there carries the restored values upstream in the clear.
 stream    typed SSE events: ``*.delta`` events carry fragments, ``*.done``,
           ``output_item.*``, ``content_part.*`` and ``response.completed``
           carry whole values
@@ -66,7 +73,32 @@ async def _redact_item(item: Any, scrub: RequestScrubber) -> Any:
         if isinstance(output, list):
             parts = [await scrub.part(p, tool_content=True) for p in output]
             return {**item, "output": parts}
+    if kind == "reasoning":
+        # Summary and reasoning text only: encrypted_content is ciphertext the
+        # server must get back byte for byte.
+        out = dict(item)
+        for field in ("summary", "content"):
+            if isinstance(item.get(field), list):
+                out[field] = [await scrub.part(p) for p in item[field]]
+        return out
+    if kind == "local_shell_call" and isinstance(item.get("action"), dict):
+        return {**item, "action": await _redact_shell_action(item["action"], scrub)}
     return item
+
+
+async def _redact_shell_action(action: dict[str, Any], scrub: RequestScrubber) -> dict[str, Any]:
+    out = dict(action)
+    if isinstance(action.get("command"), list):
+        out["command"] = [
+            await scrub.text(c, tool_content=True) if isinstance(c, str) else c
+            for c in action["command"]
+        ]
+    if isinstance(action.get("env"), dict):
+        out["env"] = {
+            k: await scrub.text(v, tool_content=True) if isinstance(v, str) else v
+            for k, v in action["env"].items()
+        }
+    return out
 
 
 def restore_responses(response: dict[str, Any], reverse_map: dict[str, str]) -> None:
@@ -91,6 +123,12 @@ def restore_item(item: Any, reverse_map: dict[str, str]) -> None:
     elif kind == "reasoning":
         for part in item.get("summary") or []:
             _restore_part(part, reverse_map)
+    elif kind == "local_shell_call" and isinstance(item.get("action"), dict):
+        action = item["action"]
+        if isinstance(action.get("command"), list):
+            action["command"] = [
+                restore(c, reverse_map) if isinstance(c, str) else c for c in action["command"]
+            ]
 
 
 def _restore_part(part: Any, reverse_map: dict[str, str]) -> None:
