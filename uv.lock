@@ -12,6 +12,17 @@ conflicts = [[
     { package = "llm-redactor", extra = "ner-trf" },
 ]]
 
+[manifest]
+
+[[manifest.dependency-metadata]]
+name = "en-core-web-sm"
+version = "3.8.0"
+
+[[manifest.dependency-metadata]]
+name = "en-core-web-trf"
+version = "3.8.0"
+requires-dist = ["spacy-curated-transformers>=0.2.2,<1.0.0"]
+
 [[package]]
 name = "annotated-doc"
 version = "0.0.4"

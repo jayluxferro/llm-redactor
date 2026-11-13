@@ -113,3 +113,21 @@ conflicts = [[{ extra = "hf" }, { extra = "ner-trf" }]]
 [tool.uv.sources]
 en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
 en-core-web-trf = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_trf-3.8.0/en_core_web_trf-3.8.0-py3-none-any.whl" }
+
+# The two model wheels' own metadata (their METADATA files), so that `uv lock`
+# never has to fetch them. Dependabot needs this: its proxy authenticates
+# requests to github.com, GitHub then redirects release downloads to an
+# objects.githubusercontent.com URL that answers 401, and the failed fetch
+# aborts every uv update for every package (dependabot/proxy#348, fix pending
+# in dependabot/proxy#27). With these entries Dependabot's uv (0.13.7) locks
+# without contacting GitHub at all. Bump them together with the URLs above;
+# tests/test_packaging.py checks that they agree.
+[[tool.uv.dependency-metadata]]
+name = "en-core-web-sm"
+version = "3.8.0"
+requires-dist = []
+
+[[tool.uv.dependency-metadata]]
+name = "en-core-web-trf"
+version = "3.8.0"
+requires-dist = ["spacy-curated-transformers>=0.2.2,<1.0.0"]
