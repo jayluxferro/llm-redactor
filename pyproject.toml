@@ -14,7 +14,10 @@ authors = [
 ]
 dependencies = [
   "httpx>=0.27",
-  "mcp>=1.0",
+  # 1.30 fixes four advisories (GHSA-84m7-p3x7-pcfv and three more). 2.x
+  # reworks the low-level server API transport/mcp_server.py is built on:
+  # a migration of its own, not a security bump.
+  "mcp>=1.30,<2",
   "fastapi>=0.115",
   "uvicorn[standard]>=0.34",
   "pyyaml>=6.0",
@@ -31,6 +34,9 @@ dependencies = [
   "pyjwt>=2.15.0",
   "urllib3>=2.8.0",
   "anyio>=4.14.2",
+  "certifi>=2026.10.18",  # GHSA-6q48-6c7w-9gw2: compromised emSign roots (httpx, requests)
+  "filelock>=4.2.1",  # 9 lock-file advisories (presidio's tldextract; torch, HF in extras)
+  "setuptools>=84.1.0",  # GHSA-xmj3-9gf7-h52w (spaCy, thinc)
 ]
 
 [project.optional-dependencies]
@@ -45,11 +51,13 @@ dev = [
 image = [
   "numpy>=2.0",
   "onnxruntime>=1.20",
-  "pillow>=10.0",
+  # 13.0 fixes 41 advisories, several in the PNG/JPEG code this extra uses.
+  "pillow>=13.0",
 ]
 # Figures (evals/generate_figures.py).
 evals = [
   "matplotlib>=3.8",
+  "pillow>=13.0",  # matplotlib's; floor the patched version (see the image extra)
 ]
 # scripts/upload_hf_dataset.py only.  Resolved apart from ner-trf (see
 # [tool.uv] conflicts): datasets caps fsspec / huggingface-hub, and resolving
